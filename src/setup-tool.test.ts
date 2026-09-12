@@ -106,7 +106,7 @@ function selection(r: InitResult): NeedsSelectionResult {
 }
 
 const baseState: FakeClientState = {
-  workspaces: { W1: { name: "NextFreela" }, W2: { name: "Second WS" } },
+  workspaces: { W1: { name: "RaviTecnologia" }, W2: { name: "Second WS" } },
   products: {
     P_FREE: {
       name: "Kstonebase Website",
@@ -280,7 +280,7 @@ describe("runInitProduct — file plan", () => {
     );
     expect(result.binding).toEqual({
       workspaceId: "W1",
-      workspaceName: "NextFreela",
+      workspaceName: "RaviTecnologia",
       productId: "P_FREE",
       productName: "Kstonebase Website",
       productType: "free",
@@ -505,11 +505,11 @@ describe("agent-docs template", () => {
       productName: "Kstonebase Website",
       productType: "free",
       workspaceId: "W1",
-      workspaceName: "NextFreela",
+      workspaceName: "RaviTecnologia",
     });
     expect(body).toContain("Kstonebase Website");
     expect(body).toContain("`P_FREE`");
-    expect(body).toContain("NextFreela");
+    expect(body).toContain("RaviTecnologia");
     expect(body).toContain("`W1`");
     expect(body).toContain("## Bindings");
     expect(body).toContain("`productId = P_FREE` inside `workspaceId = W1`");
@@ -521,7 +521,7 @@ describe("agent-docs template", () => {
       productName: null,
       productType: null,
       workspaceId: "W1",
-      workspaceName: "NextFreela",
+      workspaceName: "RaviTecnologia",
     });
     expect(body).toContain("`workspaceId = W1`");
     expect(body).toContain("read the relevant specs from this workspace");

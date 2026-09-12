@@ -1,4 +1,4 @@
-name: Publish @nextfreelatech/kstonebase-mcp
+name: Publish @ravitecnologia/kstonebase-mcp
 
 on:
   push:

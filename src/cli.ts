@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// CLI entry point for the @nextfreelatech/kstonebase-mcp package.
+// CLI entry point for the @ravitecnologia/kstonebase-mcp package.
 //
 // Default invocation runs the stdio MCP server, which is what desktop
 // agents (Claude Code, Cursor, Zed) launch as a child process.
@@ -241,7 +241,7 @@ async function runCheck(
 }
 
 // Allow `node cli.js` direct execution while staying importable for tests.
-// We compare realpaths because `npx -y @nextfreelatech/kstonebase-mcp` invokes this file
+// We compare realpaths because `npx -y @ravitecnologia/kstonebase-mcp` invokes this file
 // through the bin symlink at `node_modules/.bin/kstonebase-mcp` — without
 // realpath resolution, `process.argv[1]` (the symlink) would never equal
 // `import.meta.url` (the real path), and `main()` would silently never run.

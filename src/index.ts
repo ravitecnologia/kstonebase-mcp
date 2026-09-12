@@ -1,5 +1,5 @@
-// Public entry for the @nextfreelatech/kstonebase-mcp package. Most users invoke the
-// CLI via `npx -y @nextfreelatech/kstonebase-mcp`; this module exists so library
+// Public entry for the @ravitecnologia/kstonebase-mcp package. Most users invoke the
+// CLI via `npx -y @ravitecnologia/kstonebase-mcp`; this module exists so library
 // consumers (e.g. an integration test or an embedded MCP gateway) can
 // build the same server programmatically.
 

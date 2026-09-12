@@ -12,7 +12,7 @@ import { logger } from "./logger.js";
 import { registerReadTools, registerWriteTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 
-const SERVER_NAME = "@nextfreelatech/kstonebase-mcp";
+const SERVER_NAME = "@ravitecnologia/kstonebase-mcp";
 const SERVER_VERSION = "2.0.0";
 
 export interface BuildServerOptions {

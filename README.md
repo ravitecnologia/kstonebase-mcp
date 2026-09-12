@@ -53,7 +53,7 @@ Run this command. See the [Claude Code MCP docs](https://docs.anthropic.com/en/d
 ```bash
 claude mcp add --scope user \
   -e KSTONEBASE_API_TOKEN=YOUR_TOKEN \
-  kstonebase -- npx -y @nextfreelatech/kstonebase-mcp
+  kstonebase -- npx -y @ravitecnologia/kstonebase-mcp
 ```
 
 Drop `--scope user` to install only for the current project.
@@ -69,7 +69,7 @@ Add this to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project). See t
   "mcpServers": {
     "kstonebase": {
       "command": "npx",
-      "args": ["-y", "@nextfreelatech/kstonebase-mcp"],
+      "args": ["-y", "@ravitecnologia/kstonebase-mcp"],
       "env": {
         "KSTONEBASE_API_TOKEN": "YOUR_TOKEN"
       }
@@ -88,7 +88,7 @@ See the [VS Code MCP docs](https://code.visualstudio.com/docs/copilot/chat/mcp-s
     "kstonebase": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@nextfreelatech/kstonebase-mcp"],
+      "args": ["-y", "@ravitecnologia/kstonebase-mcp"],
       "env": {
         "KSTONEBASE_API_TOKEN": "YOUR_TOKEN"
       }
@@ -106,7 +106,7 @@ Add this to your Windsurf MCP config. See the [Windsurf MCP docs](https://docs.w
   "mcpServers": {
     "kstonebase": {
       "command": "npx",
-      "args": ["-y", "@nextfreelatech/kstonebase-mcp"],
+      "args": ["-y", "@ravitecnologia/kstonebase-mcp"],
       "env": {
         "KSTONEBASE_API_TOKEN": "YOUR_TOKEN"
       }
@@ -125,7 +125,7 @@ Add this to your Zed `settings.json`. See the [Zed Context Server docs](https://
     "Kstonebase": {
       "source": "custom",
       "command": "npx",
-      "args": ["-y", "@nextfreelatech/kstonebase-mcp"],
+      "args": ["-y", "@ravitecnologia/kstonebase-mcp"],
       "env": {
         "KSTONEBASE_API_TOKEN": "YOUR_TOKEN"
       }
@@ -143,7 +143,7 @@ Edit your `claude_desktop_config.json`. See the [Claude Desktop MCP docs](https:
   "mcpServers": {
     "kstonebase": {
       "command": "npx",
-      "args": ["-y", "@nextfreelatech/kstonebase-mcp"],
+      "args": ["-y", "@ravitecnologia/kstonebase-mcp"],
       "env": {
         "KSTONEBASE_API_TOKEN": "YOUR_TOKEN"
       }
@@ -161,7 +161,7 @@ See the [OpenAI Codex repo](https://github.com/openai/codex) for more on the MCP
 ```toml
 [mcp_servers.kstonebase]
 command = "npx"
-args = ["-y", "@nextfreelatech/kstonebase-mcp"]
+args = ["-y", "@ravitecnologia/kstonebase-mcp"]
 env = { KSTONEBASE_API_TOKEN = "YOUR_TOKEN" }
 startup_timeout_ms = 20_000
 ```
@@ -184,7 +184,7 @@ http_headers = { "Authorization" = "Bearer YOUR_TOKEN" }
 >   ```toml
 >   [mcp_servers.kstonebase]
 >   command = "C:\\Users\\yourname\\AppData\\Roaming\\npm\\npx.cmd"
->   args = ["-y", "@nextfreelatech/kstonebase-mcp"]
+>   args = ["-y", "@ravitecnologia/kstonebase-mcp"]
 >   env = {
 >     KSTONEBASE_API_TOKEN = "YOUR_TOKEN",
 >     SystemRoot = "C:\\Windows",
@@ -199,7 +199,7 @@ http_headers = { "Authorization" = "Bearer YOUR_TOKEN" }
 >   [mcp_servers.kstonebase]
 >   command = "/Users/yourname/.nvm/versions/node/v22.14.0/bin/node"
 >   args = [
->     "/Users/yourname/.nvm/versions/node/v22.14.0/lib/node_modules/@nextfreelatech/kstonebase-mcp/dist/cli.js",
+>     "/Users/yourname/.nvm/versions/node/v22.14.0/lib/node_modules/@ravitecnologia/kstonebase-mcp/dist/cli.js",
 >     "--stdio"
 >   ]
 >   env = { KSTONEBASE_API_TOKEN = "YOUR_TOKEN" }
@@ -218,7 +218,7 @@ Any client that launches an MCP server via `command + args` can swap `npx` for a
   "mcpServers": {
     "kstonebase": {
       "command": "bunx",
-      "args": ["-y", "@nextfreelatech/kstonebase-mcp"],
+      "args": ["-y", "@ravitecnologia/kstonebase-mcp"],
       "env": { "KSTONEBASE_API_TOKEN": "YOUR_TOKEN" }
     }
   }
@@ -237,7 +237,7 @@ Any client that launches an MCP server via `command + args` can swap `npx` for a
         "--allow-env",
         "--allow-net",
         "--allow-read",
-        "npm:@nextfreelatech/kstonebase-mcp"
+        "npm:@ravitecnologia/kstonebase-mcp"
       ],
       "env": { "KSTONEBASE_API_TOKEN": "YOUR_TOKEN" }
     }
@@ -254,7 +254,7 @@ Any client that launches an MCP server via `command + args` can swap `npx` for a
   "mcpServers": {
     "kstonebase": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "@nextfreelatech/kstonebase-mcp"],
+      "args": ["/c", "npx", "-y", "@ravitecnologia/kstonebase-mcp"],
       "env": { "KSTONEBASE_API_TOKEN": "YOUR_TOKEN" }
     }
   }
@@ -267,7 +267,7 @@ For agents that consume MCP over HTTP/SSE rather than stdio, run the server expl
 
 ```bash
 KSTONEBASE_API_TOKEN=YOUR_TOKEN \
-  npx -y @nextfreelatech/kstonebase-mcp --http --port 3030 --cors-origin https://your-agent.example.com
+  npx -y @ravitecnologia/kstonebase-mcp --http --port 3030 --cors-origin https://your-agent.example.com
 ```
 
 Then point your hosted agent at `http://<host>:3030/mcp`.
@@ -299,7 +299,7 @@ You can also use environment variables: `KSTONEBASE_WORKSPACE_ID`, `KSTONEBASE_P
 ## ✅ Verify the install
 
 ```bash
-KSTONEBASE_API_TOKEN=YOUR_TOKEN npx -y @nextfreelatech/kstonebase-mcp --check
+KSTONEBASE_API_TOKEN=YOUR_TOKEN npx -y @ravitecnologia/kstonebase-mcp --check
 ```
 
 Prints `OK: https://kstonebase.com reachable, N product(s) visible.` on success, or a structured error code (`AUTH_REQUIRED`, `PRODUCT_NOT_BOUND`, …) and remediation when something is off. Add `--json` for machine-readable output.
@@ -440,7 +440,7 @@ The `--api-url` CLI flag takes precedence over `KSTONEBASE_API_URL`. The `.kston
 
 ```bash
 KSTONEBASE_API_TOKEN=YOUR_TOKEN \
-  npx -y @modelcontextprotocol/inspector npx @nextfreelatech/kstonebase-mcp
+  npx -y @modelcontextprotocol/inspector npx @ravitecnologia/kstonebase-mcp
 ```
 
 ## 🚨 Troubleshooting
@@ -461,4 +461,4 @@ KSTONEBASE_API_TOKEN=YOUR_TOKEN \
 
 ## 📄 License
 
-[Apache License 2.0](./LICENSE) © Nextfreela Tech.
+[Apache License 2.0](./LICENSE) © Ravi Tecnologia.
