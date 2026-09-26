@@ -13,7 +13,11 @@ import {
   type TransportKind,
   type WorkspaceCandidate,
 } from "./setup-tool.js";
-import { buildToolInventory, renderAgentDocs } from "./templates/agent-docs.js";
+import {
+  buildToolInventory,
+  renderAgentDocs,
+  type AgentDocsBinding,
+} from "./templates/agent-docs.js";
 
 interface FakeClientState {
   workspaces: Record<string, { name: string }>;
@@ -567,5 +571,58 @@ describe("agent-docs template", () => {
     });
     expect(both.writes).toContain("create_free_specification");
     expect(both.writes).toContain("create_product");
+  });
+
+  it("lists the open-question tools for every binding shape", () => {
+    const shapes: AgentDocsBinding[] = [
+      { productId: "P", productName: "f", productType: "free", workspaceId: null, workspaceName: null },
+      { productId: "P", productName: "w", productType: "web_application", workspaceId: null, workspaceName: null },
+      { productId: null, productName: null, productType: null, workspaceId: "W", workspaceName: "ws" },
+      { productId: "P", productName: "f", productType: "free", workspaceId: "W", workspaceName: "ws" },
+    ];
+    for (const binding of shapes) {
+      const inv = buildToolInventory(binding);
+      expect(inv.reads).toEqual(
+        expect.arrayContaining(["list_open_questions", "read_open_question"]),
+      );
+      expect(inv.writes).toEqual(
+        expect.arrayContaining([
+          "create_open_question",
+          "update_open_question",
+          "delete_open_question",
+        ]),
+      );
+      expect(inv.reads).not.toContain("create_open_question");
+
+      const body = renderAgentDocs(binding);
+      const writesAt = body.indexOf("Writes:");
+      expect(body.indexOf("- `read_open_question`")).toBeGreaterThan(-1);
+      expect(body.indexOf("- `read_open_question`")).toBeLessThan(writesAt);
+      for (const tool of [
+        "create_open_question",
+        "update_open_question",
+        "delete_open_question",
+      ]) {
+        expect(body.indexOf(`- \`${tool}\``)).toBeGreaterThan(writesAt);
+      }
+    }
+  });
+
+  it("puts the open-question tools into the planned CLAUDE.md and AGENTS.md", async () => {
+    const client = fakeClient(baseState);
+    const result = planned(
+      await runInitProduct({ productId: "P_WEB" }, deps(client)),
+    );
+    for (const path of ["CLAUDE.md", "AGENTS.md"]) {
+      const file = result.files.find((f) => f.path === path)!;
+      for (const tool of [
+        "read_open_question",
+        "create_open_question",
+        "update_open_question",
+        "delete_open_question",
+      ]) {
+        expect(file.content).toContain(`- \`${tool}\``);
+      }
+    }
   });
 });

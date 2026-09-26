@@ -38,6 +38,99 @@ export interface ListOpenQuestionsQuery {
   includeResolved?: boolean;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Open-question DTOs (Kstonebase MCP spec "mcp-open-question-management" §4
+// and its implementation-contract change entry). The client never reshapes
+// these: tools pass the API's JSON through unchanged.
+// ──────────────────────────────────────────────────────────────────────────
+
+export type OpenQuestionKind = "QUESTION" | "ASSUMPTION";
+
+export type OpenQuestionStatus = "OPEN" | "RESOLVED" | "DISMISSED";
+
+/** One question or assumption (list items and the `question` field). */
+export interface OpenQuestion {
+  id: string;
+  specificationId: string;
+  kind: OpenQuestionKind;
+  body: string;
+  answer: string | null;
+  status: OpenQuestionStatus;
+  /** Line number (as a string) of the heading the item lives under; null = before the first heading. */
+  anchor: string | null;
+  resolvedAt: string | null;
+  createdAt: string;
+  /** Send back verbatim as `expectedUpdatedAt`; never reformat it. */
+  updatedAt: string;
+}
+
+/** Specification state returned next to every question result. */
+export interface OpenQuestionSpecMeta {
+  id: string;
+  /** OCC token for the next write (`version` argument). */
+  version: number;
+  approvedVersion: number;
+  status: string;
+  openQuestionsCount: number;
+}
+
+/**
+ * List item. `specificationId` and `resolvedAt` are additive fields, so they
+ * are optional here: API builds that predate the open-question CRUD contract
+ * do not send them.
+ */
+export type OpenQuestionListItem = Omit<
+  OpenQuestion,
+  "specificationId" | "resolvedAt"
+> &
+  Partial<Pick<OpenQuestion, "specificationId" | "resolvedAt">>;
+
+export interface OpenQuestionList {
+  /** Ordered by createdAt, oldest first. */
+  items: OpenQuestionListItem[];
+  /** Additive; absent on API builds that predate the open-question CRUD contract. */
+  spec?: OpenQuestionSpecMeta;
+}
+
+/** Result of read, create and update. */
+export interface OpenQuestionResult {
+  question: OpenQuestion;
+  spec: OpenQuestionSpecMeta;
+}
+
+export interface DeletedOpenQuestionResult {
+  deletedQuestionId: string;
+  spec: OpenQuestionSpecMeta;
+}
+
+export interface CreateOpenQuestionInput {
+  /** Current specification version (OCC token). */
+  version: number;
+  body: string;
+  /** Defaults to QUESTION on the API side when omitted. */
+  kind?: OpenQuestionKind;
+  /** Omitted or null = end of the document. */
+  sectionPath?: string | null;
+}
+
+export interface UpdateOpenQuestionInput {
+  /** Current specification version (OCC token). */
+  version: number;
+  /** The item's `updatedAt`, exactly as returned by the latest read. */
+  expectedUpdatedAt: string;
+  body?: string;
+  /** Omitted = keep the location; null = move to the end of the document. */
+  sectionPath?: string | null;
+  /** Omitted = keep the draft answer; null = clear it. */
+  answer?: string | null;
+  status?: OpenQuestionStatus;
+}
+
+export interface DeleteOpenQuestionInput {
+  version: number;
+  expectedUpdatedAt: string;
+}
+
 export interface ApiResponse<T> {
   body: T;
   etag: string | null;
@@ -223,7 +316,7 @@ export class KstonebaseClient {
   listOpenQuestions(
     specId: string,
     query: ListOpenQuestionsQuery = {},
-  ): Promise<ApiResponse<unknown>> {
+  ): Promise<ApiResponse<OpenQuestionList>> {
     const params = new URLSearchParams();
     if (query.includeResolved) params.set("includeResolved", "true");
     const qs = params.toString();
@@ -232,26 +325,97 @@ export class KstonebaseClient {
     );
   }
 
+  /** GET one question or assumption → `{ question, spec }`. */
+  async readOpenQuestion(
+    specId: string,
+    questionId: string,
+  ): Promise<ApiResponse<OpenQuestionResult>> {
+    return this.getJson(openQuestionItemPath(specId, questionId));
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Open-question writes. The API applies the record and the Markdown
+  // marker change in one transaction; these methods only shape the JSON.
+  // Keys whose argument is undefined are omitted, explicit nulls are kept
+  // (null sectionPath = end of document, null answer = clear the draft),
+  // and `version` / `expectedUpdatedAt` are sent exactly as given. Nothing
+  // here retries: after a conflict or a timeout the caller must re-read.
+  // ────────────────────────────────────────────────────────────────────
+
+  /** POST → 201 `{ question, spec }`. */
+  async createOpenQuestion(
+    specId: string,
+    input: CreateOpenQuestionInput,
+  ): Promise<ApiResponse<OpenQuestionResult>> {
+    return this.sendJson(
+      "POST",
+      openQuestionsPath(specId),
+      definedOnly({
+        version: input.version,
+        body: input.body,
+        kind: input.kind,
+        sectionPath: input.sectionPath,
+      }),
+    );
+  }
+
+  /** PATCH → 200 `{ question, spec }`. */
+  async updateOpenQuestion(
+    specId: string,
+    questionId: string,
+    input: UpdateOpenQuestionInput,
+  ): Promise<ApiResponse<OpenQuestionResult>> {
+    return this.sendJson(
+      "PATCH",
+      openQuestionItemPath(specId, questionId),
+      definedOnly({
+        version: input.version,
+        expectedUpdatedAt: input.expectedUpdatedAt,
+        body: input.body,
+        sectionPath: input.sectionPath,
+        answer: input.answer,
+        status: input.status,
+      }),
+    );
+  }
+
+  /** DELETE with a JSON body → 200 `{ deletedQuestionId, spec }`. */
+  async deleteOpenQuestion(
+    specId: string,
+    questionId: string,
+    input: DeleteOpenQuestionInput,
+  ): Promise<ApiResponse<DeletedOpenQuestionResult>> {
+    return this.sendJson(
+      "DELETE",
+      openQuestionItemPath(specId, questionId),
+      definedOnly({
+        version: input.version,
+        expectedUpdatedAt: input.expectedUpdatedAt,
+      }),
+    );
+  }
+
   /** Convenience for endpoints that never send If-None-Match — narrows the
-   *  union so callers don't have to discriminate on `notModified`. */
-  private async getJson(path: string): Promise<ApiResponse<unknown>> {
+   *  union so callers don't have to discriminate on `notModified`. The body
+   *  type is the documented API shape; it is not validated at runtime. */
+  private async getJson<T = unknown>(path: string): Promise<ApiResponse<T>> {
     const res = await this.get(path);
     if ("notModified" in res) {
       // Should not happen — getJson never asks for conditional requests.
       throw new Error("Unexpected 304 on a non-conditional request.");
     }
-    return res;
+    return res as ApiResponse<T>;
   }
 
   private postJson(path: string): Promise<ApiResponse<unknown>> {
     return this.sendJson("POST", path, undefined);
   }
 
-  private async sendJson(
-    method: "POST" | "PATCH",
+  private async sendJson<T = unknown>(
+    method: "POST" | "PATCH" | "DELETE",
     path: string,
     body: unknown,
-  ): Promise<ApiResponse<unknown>> {
+  ): Promise<ApiResponse<T>> {
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.token}`,
       accept: "application/json",
@@ -275,7 +439,7 @@ export class KstonebaseClient {
     }
 
     return {
-      body: parsed,
+      body: parsed as T,
       etag: res.headers.get("etag"),
       status: res.status,
     };
@@ -485,6 +649,39 @@ function safeParseJson(text: string): unknown {
   } catch {
     return { error: { message: "API returned a non-JSON payload." } };
   }
+}
+
+function openQuestionsPath(specId: string): string {
+  return `/api/mcp/specifications/${pathSegment("specId", specId)}/open-questions`;
+}
+
+function openQuestionItemPath(specId: string, questionId: string): string {
+  return `${openQuestionsPath(specId)}/${pathSegment("questionId", questionId)}`;
+}
+
+/**
+ * Percent-encode one id for use as a path segment. Empty, "." and ".." ids
+ * are rejected before any request: URL parsing would collapse them into a
+ * different path, which must never happen on a PATCH or DELETE.
+ */
+function pathSegment(name: string, id: string): string {
+  if (id === "" || id === "." || id === "..") {
+    throw new McpToolError(
+      "VALIDATION_ERROR",
+      `${name} must be a non-empty id other than "." or "..".`,
+      "Pass the id exactly as returned by list_specifications, list_open_questions or read_open_question.",
+    );
+  }
+  return encodeURIComponent(id);
+}
+
+/** Copy only the keys whose value is not undefined; nulls are kept. */
+function definedOnly(entries: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(entries)) {
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
 }
 
 function isNotFound(err: unknown): boolean {
