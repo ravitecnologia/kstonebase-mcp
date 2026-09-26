@@ -242,3 +242,323 @@ describe("KstonebaseClient — change history", () => {
     );
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// Open-question CRUD (Kstonebase MCP spec "mcp-open-question-management" §4,
+// implementation contract §1–§4). Fixtures are the contract's canonical ones.
+// ──────────────────────────────────────────────────────────────────────────
+
+const QUESTION_FIXTURE = {
+  question: {
+    id: "q_1",
+    specificationId: "s_1",
+    kind: "QUESTION",
+    body: "Who approves refunds?",
+    answer: null,
+    status: "OPEN",
+    anchor: "7",
+    resolvedAt: null,
+    createdAt: "2026-09-26T18:04:05.1Z",
+    updatedAt: "2026-09-26T18:04:05.123Z",
+  },
+  spec: {
+    id: "s_1",
+    version: 13,
+    approvedVersion: 2,
+    status: "DRAFT",
+    openQuestionsCount: 1,
+  },
+};
+
+const DELETE_FIXTURE = {
+  deletedQuestionId: "q_1",
+  spec: {
+    id: "s_1",
+    version: 15,
+    approvedVersion: 2,
+    status: "DRAFT",
+    openQuestionsCount: 0,
+  },
+};
+
+describe("KstonebaseClient — open questions", () => {
+  const TOKEN = "kstonebase_pat_OQTEST";
+
+  function setup(response: MockResponseInit = { body: QUESTION_FIXTURE }) {
+    const fetcher = vi.fn<typeof fetch>(async () => mockResponse(response));
+    const client = new KstonebaseClient({
+      apiUrl: "https://kstonebase.example",
+      token: TOKEN,
+      fetcher: fetcher as unknown as typeof fetch,
+    });
+    const call = (i = 0) => {
+      const [url, init] = fetcher.mock.calls[i];
+      return {
+        url: url as string,
+        method: init?.method,
+        headers: init?.headers as Record<string, string>,
+        rawBody: init?.body as string | undefined,
+        body:
+          typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+        initKeys: Object.keys(init ?? {}),
+      };
+    };
+    return { fetcher, client, call };
+  }
+
+  it("reads one item with GET on the encoded item path", async () => {
+    const { client, call } = setup();
+    const res = await client.readOpenQuestion("s_1", "q_1");
+    expect(call().method).toBe("GET");
+    expect(call().url).toBe(
+      "https://kstonebase.example/api/mcp/specifications/s_1/open-questions/q_1",
+    );
+    expect(call().rawBody).toBeUndefined();
+    expect(res.body).toEqual(QUESTION_FIXTURE);
+    expect(res.status).toBe(200);
+  });
+
+  it("percent-encodes both ids", async () => {
+    const { client, call } = setup();
+    await client.readOpenQuestion("spec/1 ?x", "q#1&a=b/..");
+    expect(call().url).toBe(
+      "https://kstonebase.example/api/mcp/specifications/spec%2F1%20%3Fx/open-questions/q%231%26a%3Db%2F..",
+    );
+  });
+
+  it("rejects empty, '.' and '..' ids before sending anything", async () => {
+    const { fetcher, client } = setup();
+    for (const [specId, questionId] of [
+      ["", "q_1"],
+      ["s_1", ""],
+      [".", "q_1"],
+      ["s_1", ".."],
+    ]) {
+      const err = await client
+        .deleteOpenQuestion(specId, questionId, {
+          version: 1,
+          expectedUpdatedAt: "2026-09-26T18:04:05.123Z",
+        })
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(McpToolError);
+      expect((err as McpToolError).code).toBe("VALIDATION_ERROR");
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("creates with POST, sends only the keys that were given, and returns the 201 body", async () => {
+    const { client, call } = setup({ status: 201, body: QUESTION_FIXTURE });
+    const res = await client.createOpenQuestion("s_1", {
+      version: 12,
+      body: "Who approves refunds?",
+    });
+    expect(call().method).toBe("POST");
+    expect(call().url).toBe(
+      "https://kstonebase.example/api/mcp/specifications/s_1/open-questions",
+    );
+    expect(call().headers["content-type"]).toBe("application/json");
+    expect(call().rawBody).toBe('{"version":12,"body":"Who approves refunds?"}');
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual(QUESTION_FIXTURE);
+  });
+
+  it("create keeps kind and an explicit null sectionPath", async () => {
+    const { client, call } = setup({ status: 201, body: QUESTION_FIXTURE });
+    await client.createOpenQuestion("s_1", {
+      version: 12,
+      body: "Refunds are approved by finance",
+      kind: "ASSUMPTION",
+      sectionPath: null,
+    });
+    expect(call().body).toEqual({
+      version: 12,
+      body: "Refunds are approved by finance",
+      kind: "ASSUMPTION",
+      sectionPath: null,
+    });
+  });
+
+  it("create sends a sectionPath string unchanged", async () => {
+    const { client, call } = setup({ status: 201, body: QUESTION_FIXTURE });
+    await client.createOpenQuestion("s_1", {
+      version: 12,
+      body: "Who approves refunds?",
+      sectionPath: "## Refunds",
+    });
+    expect(call().body).toEqual({
+      version: 12,
+      body: "Who approves refunds?",
+      sectionPath: "## Refunds",
+    });
+  });
+
+  it("updates with PATCH, keeping explicit nulls and omitting undefined keys", async () => {
+    const { client, call } = setup();
+    await client.updateOpenQuestion("s_1", "q_1", {
+      version: 13,
+      expectedUpdatedAt: "2026-09-26T18:04:05.123Z",
+      sectionPath: null,
+      answer: null,
+      body: undefined,
+      status: undefined,
+    });
+    expect(call().method).toBe("PATCH");
+    expect(call().url).toBe(
+      "https://kstonebase.example/api/mcp/specifications/s_1/open-questions/q_1",
+    );
+    expect(call().rawBody).toBe(
+      '{"version":13,"expectedUpdatedAt":"2026-09-26T18:04:05.123Z","sectionPath":null,"answer":null}',
+    );
+  });
+
+  it("update forwards body, answer and status as given", async () => {
+    const { client, call } = setup();
+    await client.updateOpenQuestion("s_1", "q_1", {
+      version: 13,
+      expectedUpdatedAt: "2026-09-26T18:04:05.123Z",
+      body: "Who approves refunds over 100 EUR?",
+      answer: "Finance",
+      status: "RESOLVED",
+    });
+    expect(call().body).toEqual({
+      version: 13,
+      expectedUpdatedAt: "2026-09-26T18:04:05.123Z",
+      body: "Who approves refunds over 100 EUR?",
+      answer: "Finance",
+      status: "RESOLVED",
+    });
+  });
+
+  it("deletes with a JSON body and parses the JSON 200 result", async () => {
+    const { client, call } = setup({ status: 200, body: DELETE_FIXTURE });
+    const res = await client.deleteOpenQuestion("s_1", "q_1", {
+      version: 14,
+      expectedUpdatedAt: "2026-09-26T18:04:05.123Z",
+    });
+    expect(call().method).toBe("DELETE");
+    expect(call().url).toBe(
+      "https://kstonebase.example/api/mcp/specifications/s_1/open-questions/q_1",
+    );
+    expect(call().headers["content-type"]).toBe("application/json");
+    expect(call().body).toEqual({
+      version: 14,
+      expectedUpdatedAt: "2026-09-26T18:04:05.123Z",
+    });
+    expect(res.body).toEqual(DELETE_FIXTURE);
+  });
+
+  it("round-trips both conflict tokens without coercion", async () => {
+    // Go drops trailing zeros ("…05.1Z"); a Date round-trip would turn it
+    // into "…05.100Z" and the API would answer STALE_QUESTION.
+    const { client, call } = setup();
+    for (const expectedUpdatedAt of [
+      "2026-09-26T18:04:05.1Z",
+      "2026-09-26T18:04:05Z",
+      "2026-09-26T18:04:05.123456Z",
+    ]) {
+      await client.updateOpenQuestion("s_1", "q_1", {
+        version: 2147483647,
+        expectedUpdatedAt,
+        status: "DISMISSED",
+      });
+    }
+    await client.deleteOpenQuestion("s_1", "q_1", {
+      version: 9007199254740991,
+      expectedUpdatedAt: "2026-09-26T18:04:05.1Z",
+    });
+    expect(call(0).rawBody).toContain('"expectedUpdatedAt":"2026-09-26T18:04:05.1Z"');
+    expect(call(1).rawBody).toContain('"expectedUpdatedAt":"2026-09-26T18:04:05Z"');
+    expect(call(2).rawBody).toContain('"expectedUpdatedAt":"2026-09-26T18:04:05.123456Z"');
+    expect(call(0).rawBody).toContain('"version":2147483647');
+    expect(call(3).rawBody).toBe(
+      '{"version":9007199254740991,"expectedUpdatedAt":"2026-09-26T18:04:05.1Z"}',
+    );
+  });
+
+  it("sends only the Bearer token as a credential", async () => {
+    const { client, call, fetcher } = setup();
+    await client.readOpenQuestion("s_1", "q_1");
+    await client.createOpenQuestion("s_1", { version: 1, body: "b" });
+    await client.updateOpenQuestion("s_1", "q_1", {
+      version: 1,
+      expectedUpdatedAt: "t",
+      status: "OPEN",
+    });
+    await client.deleteOpenQuestion("s_1", "q_1", {
+      version: 1,
+      expectedUpdatedAt: "t",
+    });
+    expect(fetcher).toHaveBeenCalledTimes(4);
+    for (let i = 0; i < 4; i += 1) {
+      const { headers, initKeys } = call(i);
+      expect(headers.authorization).toBe(`Bearer ${TOKEN}`);
+      expect(
+        Object.keys(headers).every((h) =>
+          ["authorization", "accept", "content-type"].includes(h),
+        ),
+      ).toBe(true);
+      expect(initKeys.every((k) => ["method", "headers", "body"].includes(k))).toBe(true);
+    }
+  });
+
+  it("surfaces STALE_QUESTION with its hint and does not retry", async () => {
+    const { client, fetcher } = setup({
+      status: 409,
+      body: {
+        error: {
+          code: "CONFLICT",
+          message: "The question changed since you read it.",
+          details: {
+            code: "STALE_QUESTION",
+            hint: "Re-read the question with read_open_question, then retry with its current updatedAt and the specification's current version.",
+          },
+        },
+      },
+    });
+    const err = await client
+      .updateOpenQuestion("s_1", "q_1", {
+        version: 13,
+        expectedUpdatedAt: "2026-09-26T18:04:05.123Z",
+        status: "RESOLVED",
+      })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(McpToolError);
+    expect((err as McpToolError).code).toBe("STALE_QUESTION");
+    expect((err as McpToolError).details?.hint).toContain("read_open_question");
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry a mutation whose request failed in flight", async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => {
+      throw new TypeError("fetch failed");
+    });
+    const client = new KstonebaseClient({
+      apiUrl: "https://kstonebase.example",
+      token: TOKEN,
+      fetcher: fetcher as unknown as typeof fetch,
+    });
+    await expect(
+      client.createOpenQuestion("s_1", { version: 12, body: "b" }),
+    ).rejects.toThrow("fetch failed");
+    await expect(
+      client.deleteOpenQuestion("s_1", "q_1", { version: 1, expectedUpdatedAt: "t" }),
+    ).rejects.toThrow("fetch failed");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps list_open_questions on the same path and passes the additive fields through", async () => {
+    const listBody = {
+      items: [QUESTION_FIXTURE.question],
+      spec: QUESTION_FIXTURE.spec,
+    };
+    const { client, call } = setup({ body: listBody });
+    const res = await client.listOpenQuestions("s_1", { includeResolved: true });
+    expect(call().method).toBe("GET");
+    expect(call().url).toBe(
+      "https://kstonebase.example/api/mcp/specifications/s_1/open-questions?includeResolved=true",
+    );
+    expect(res.body).toEqual(listBody);
+    expect(res.body.spec?.version).toBe(13);
+    expect(res.body.items[0].resolvedAt).toBeNull();
+  });
+});

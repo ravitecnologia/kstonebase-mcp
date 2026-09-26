@@ -1,6 +1,7 @@
 // Tool registration for the MCP server (per Kstonebase spec "mcp-server" §6
-// "Tool naming"). Read-only surface for MVP — write tools land with
-// feature #4 (MCP Specification Version Tools).
+// "Tool naming"). The stdio and --http transports both build their server
+// through buildServer(), so every tool registered here is advertised with
+// the same name, schema and annotations on each.
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -38,6 +39,22 @@ const OVERWRITE_WRITE_TOOL: ToolAnnotations = {
   destructiveHint: true,
   openWorldHint: false,
 };
+
+// Open-question tool descriptions (Kstonebase MCP spec
+// "mcp-open-question-management", implementation contract §6). The contract
+// pins this exact text for the Website registry as well, so every transport
+// tells the agent the same thing; change both together.
+const READ_OPEN_QUESTION_DESCRIPTION =
+  "Read one open question or assumption on a Specification, together with the Specification's current version. Read-only. Returns the item's updatedAt, which update_open_question and delete_open_question need as expectedUpdatedAt.";
+
+const CREATE_OPEN_QUESTION_DESCRIPTION =
+  'Add an open question (kind QUESTION, the default) or an assumption (kind ASSUMPTION) to a Draft Specification. The record and its inline marker are written together: <open_question>BODY</open_question> or _Assumption: BODY_ at the end of the section named by sectionPath (a heading such as "## Scope"), or at the end of the document when sectionPath is omitted. Requires the Specification\'s current version and advances it.';
+
+const UPDATE_OPEN_QUESTION_DESCRIPTION =
+  "Edit, move, resolve, dismiss or reopen an open question or assumption on a Draft Specification. The record and the Markdown change together: resolving a question replaces its marker with the answer (an answer is required); dismissing a question keeps its marker; resolving an assumption turns it into plain prose; dismissing an assumption strikes it through as not valid; reopening restores an unresolved marker and keeps earlier decision prose. Body, sectionPath and answer change only while the item is OPEN. Requires version and expectedUpdatedAt from your latest read; after STALE_VERSION or STALE_QUESTION, re-read before retrying.";
+
+const DELETE_OPEN_QUESTION_DESCRIPTION =
+  "Permanently delete an open question or assumption from a Draft Specification. Removes the record and any marker still in the document; prose written by an earlier resolution or dismissal stays. This cannot be undone: to set an item aside, use update_open_question with status DISMISSED instead. Requires version and expectedUpdatedAt from your latest read.";
 
 /**
  * Resolves the effective product id — explicit argument wins, then the
@@ -172,13 +189,14 @@ function ok(data: unknown): ToolResult {
 }
 
 function fail(failure: McpFailure): ToolResult {
+  let text = `${failure.code}: ${failure.message}\n\n${failure.remediation}`;
+  if (failure.details) {
+    // The API's hint / reason / fields / status / sectionPath / from / to,
+    // so the agent can decide what to re-read without guessing.
+    text += `\n\nDetails: ${JSON.stringify(failure.details)}`;
+  }
   return {
-    content: [
-      {
-        type: "text",
-        text: `${failure.code}: ${failure.message}\n\n${failure.remediation}`,
-      },
-    ],
+    content: [{ type: "text", text }],
     isError: true,
     structuredContent: failure as unknown as Record<string, unknown>,
   };
@@ -561,6 +579,31 @@ export function registerReadTools(
       }),
   );
 
+  server.registerTool(
+    "read_open_question",
+    {
+      title: "Read an open question",
+      description: READ_OPEN_QUESTION_DESCRIPTION,
+      annotations: READ_TOOL,
+      inputSchema: {
+        specId: z.string(),
+        questionId: z.string(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "read_open_question",
+        { specId: args.specId, questionId: args.questionId },
+        async () => {
+          const res = await client.readOpenQuestion(
+            args.specId,
+            args.questionId,
+          );
+          return ok(res.body);
+        },
+      ),
+  );
+
   // ────────────────────────────────────────────────────────────────────
   // Knowledge-layer read tool (per Kstonebase MCP spec
   // "mcp-knowledge-layer-tools").
@@ -707,6 +750,109 @@ export function registerWriteTools(
         const res = await client.discardDraft(args.specId);
         return ok(res.body);
       }),
+  );
+
+  // ────────────────────────────────────────────────────────────────────
+  // Open-question write tools (per Kstonebase MCP spec
+  // "mcp-open-question-management"). The API owns the record + Markdown
+  // behaviour; these handlers forward the arguments unchanged and never
+  // retry — conflicts come back as STALE_* codes for the agent to re-read.
+  // ────────────────────────────────────────────────────────────────────
+
+  server.registerTool(
+    "create_open_question",
+    {
+      title: "Create an open question",
+      description: CREATE_OPEN_QUESTION_DESCRIPTION,
+      annotations: ADDITIVE_WRITE_TOOL,
+      inputSchema: {
+        specId: z.string(),
+        version: z.number().int(),
+        body: z.string(),
+        kind: z.enum(["QUESTION", "ASSUMPTION"]).optional(),
+        sectionPath: z.string().nullable().optional(),
+      },
+    },
+    async (args) =>
+      runTool("create_open_question", { specId: args.specId }, async () => {
+        const res = await client.createOpenQuestion(args.specId, {
+          version: args.version,
+          body: args.body,
+          kind: args.kind,
+          sectionPath: args.sectionPath,
+        });
+        return ok(res.body);
+      }),
+  );
+
+  server.registerTool(
+    "update_open_question",
+    {
+      title: "Update an open question",
+      description: UPDATE_OPEN_QUESTION_DESCRIPTION,
+      annotations: OVERWRITE_WRITE_TOOL,
+      inputSchema: {
+        specId: z.string(),
+        questionId: z.string(),
+        version: z.number().int(),
+        expectedUpdatedAt: z.string(),
+        body: z.string().optional(),
+        sectionPath: z.string().nullable().optional(),
+        answer: z.string().nullable().optional(),
+        status: z.enum(["OPEN", "RESOLVED", "DISMISSED"]).optional(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "update_open_question",
+        { specId: args.specId, questionId: args.questionId },
+        async () => {
+          const res = await client.updateOpenQuestion(
+            args.specId,
+            args.questionId,
+            {
+              version: args.version,
+              expectedUpdatedAt: args.expectedUpdatedAt,
+              body: args.body,
+              sectionPath: args.sectionPath,
+              answer: args.answer,
+              status: args.status,
+            },
+          );
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "delete_open_question",
+    {
+      title: "Delete an open question",
+      description: DELETE_OPEN_QUESTION_DESCRIPTION,
+      annotations: OVERWRITE_WRITE_TOOL,
+      inputSchema: {
+        specId: z.string(),
+        questionId: z.string(),
+        version: z.number().int(),
+        expectedUpdatedAt: z.string(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "delete_open_question",
+        { specId: args.specId, questionId: args.questionId },
+        async () => {
+          const res = await client.deleteOpenQuestion(
+            args.specId,
+            args.questionId,
+            {
+              version: args.version,
+              expectedUpdatedAt: args.expectedUpdatedAt,
+            },
+          );
+          return ok(res.body);
+        },
+      ),
   );
 
   // ────────────────────────────────────────────────────────────────────

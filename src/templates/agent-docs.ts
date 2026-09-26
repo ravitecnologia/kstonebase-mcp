@@ -161,6 +161,7 @@ export function buildToolInventory(binding: AgentDocsBinding): ToolInventory {
     "list_specification_changes",
     "read_specification_change",
     "list_open_questions",
+    "read_open_question",
     "list_products",
     "read_product",
     "list_workspaces",
@@ -168,11 +169,16 @@ export function buildToolInventory(binding: AgentDocsBinding): ToolInventory {
     "find_product_by_subject",
   ];
 
+  // Open-question tools work on Product (Free or Web Application) and
+  // Workspace specifications alike, so they belong to every binding shape.
   const baseWrites = [
     "start_new_version",
     "update_specification_content",
     "update_specification_section",
     "append_context",
+    "create_open_question",
+    "update_open_question",
+    "delete_open_question",
     "request_review",
     "discard_draft",
   ];

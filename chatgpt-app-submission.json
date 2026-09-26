@@ -152,6 +152,54 @@
         "destructive_justification": "Does not resolve, delete, or otherwise irreversibly change any question."
       }
     },
+    "read_open_question": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only returns one question or assumption and the specification's current version; it changes nothing.",
+        "open_world_justification": "Only reads private Kstonebase review metadata and does not publish or send data outward.",
+        "destructive_justification": "Does not edit, resolve, delete, or otherwise change any question or specification."
+      }
+    },
+    "create_open_question": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Adds a question or assumption to a draft specification and writes its inline marker into the draft text, which modifies Kstonebase content.",
+        "open_world_justification": "Only writes private Kstonebase specification data and does not publish to public internet endpoints.",
+        "destructive_justification": "Adds a new item and marker without deleting or overwriting existing content; it only works on drafts and never touches approved versions."
+      }
+    },
+    "update_open_question": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Edits, resolves, dismisses, or reopens a question or assumption and rewrites its inline marker in the draft specification text.",
+        "open_world_justification": "Only updates private Kstonebase specification data and cannot publish or send public output.",
+        "destructive_justification": "Resolving or dismissing replaces marker text in the draft, for example with the answer, which overwrites draft content even though approved versions are preserved."
+      }
+    },
+    "delete_open_question": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes a question or assumption record and any inline marker still in the draft specification.",
+        "open_world_justification": "Only removes private Kstonebase data and does not affect public systems.",
+        "destructive_justification": "Permanently deletes the item, which cannot be undone; approved versions and prose from earlier decisions are preserved."
+      }
+    },
     "start_new_version": {
       "annotations": {
         "readOnlyHint": false,
@@ -348,6 +396,14 @@
       "file_attachment_urls": null,
       "tools_triggered": "create_free_specification",
       "expected_output": "Creates a new draft specification with the requested title in the bound Free product.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Resolve an open question on a draft specification.",
+      "user_prompt": "On draft specification spec_123, resolve the open question about who approves refunds with the answer: Finance approves refunds over 100 EUR.",
+      "file_attachment_urls": null,
+      "tools_triggered": "update_open_question",
+      "expected_output": "Resolves the question, replaces its inline marker in the draft with the answer, and returns the updated question with the specification's new version.",
       "expected_output_url": null
     }
   ],

@@ -13,7 +13,7 @@ import { registerReadTools, registerWriteTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 
 const SERVER_NAME = "@ravitecnologia/kstonebase-mcp";
-const SERVER_VERSION = "2.0.0";
+const SERVER_VERSION = "2.2.0";
 
 export interface BuildServerOptions {
   config: ResolvedConfig;

@@ -323,7 +323,8 @@ All tools take ids as strings. Bound Workspace/Product ids are inferred from `.k
 | `read_specification_version`  | Full Markdown of a specific approved revision. Pair with `list_specification_versions` to diff history against current.                                                                |
 | `list_specification_changes`  | Decisions and fixes recorded against a spec, newest first. These live outside the document, so the spec body stays consolidated — read them to recover the "why".                      |
 | `read_specification_change`   | Full Markdown of one change entry. Pair with `list_specification_changes`.                                                                                                             |
-| `list_open_questions`         | Questions and assumptions attached to a spec. Resolved/dismissed items are excluded unless `includeResolved=true`.                                                                     |
+| `list_open_questions`         | Questions and assumptions attached to a spec. Resolved/dismissed items are excluded unless `includeResolved=true`. Newer deployments also return the spec's current `version`.        |
+| `read_open_question`          | One question or assumption plus the spec's current `version`. Its `updatedAt` is the `expectedUpdatedAt` that updates and deletes need. See [Open questions and assumptions](#open-questions-and-assumptions). |
 
 ### Write tools
 
@@ -336,8 +337,39 @@ All tools take ids as strings. Bound Workspace/Product ids are inferred from `.k
 | `request_review`               | Move a Draft to `Needs Review` for a human to approve. Rejected with `OPEN_QUESTIONS_PRESENT` if questions remain — surface them to the user first.                                                      |
 | `discard_draft`                | Roll a Draft (or Needs Review) back to its last approved version. Rejected on specs that have never been approved.                                                                                       |
 | `create_free_specification`    | Create a new Markdown spec in the bound Free product. Path uniqueness is enforced. Rejected with `PRODUCT_TYPE_MISMATCH` on Web Application Products — use `start_new_version` on a structured spec.     |
+| `create_open_question`         | Add a question (default) or an assumption to a Draft, together with its inline marker. Needs the spec `version`.                                                                                          |
+| `update_open_question`         | Edit, move, resolve, dismiss or reopen a question or assumption; the document text changes with it. Needs `version` and `expectedUpdatedAt`.                                                               |
+| `delete_open_question`         | **Permanently** delete a question or assumption and any marker still in the document. Needs `version` and `expectedUpdatedAt`. To set an item aside, dismiss it instead.                                   |
 
 > **Note** — the agent never calls "mark reviewed". Approval stays a human action in the Kstonebase UI. The MCP can only nudge a draft to `Needs Review`.
+
+### Open questions and assumptions
+
+`list_open_questions`, `read_open_question`, `create_open_question`, `update_open_question` and `delete_open_question` manage the questions and assumptions of one specification. The Kstonebase API changes the record and its inline Markdown marker together, in one transaction, so the question list and the document never disagree.
+
+- **Scope** — every call names the specification (`specId`, plus `questionId` for a single item); the `.kstonebase.json` binding is not used. Product specifications (Free and Web Application) and Workspace specifications work the same way. The token needs access to that specification, and the `write` scope for changes.
+- **Draft only** — create, update and delete need a non-archived Draft. A Reviewed spec needs `start_new_version` first. A spec in Needs Review must be moved back to Draft by a human in Kstonebase — `start_new_version` does not unlock it. A generating spec must finish first. These tools never change `approvedVersion`, the spec status or human approval.
+- **Two concurrency tokens** — every change needs `version`, the spec's current version (from `read_specification`, `list_open_questions` or `read_open_question`). Updates and deletes also need `expectedUpdatedAt`: the item's `updatedAt`, copied exactly as returned. Each successful change returns the new `spec.version` and `question.updatedAt` for the next call. After `STALE_VERSION` or `STALE_QUESTION`, re-read and decide again. The server never retries a change; after a timeout, re-read before retrying, because the change may already have been applied.
+
+| Action | Record | Document text |
+| --- | --- | --- |
+| Create a question | New `OPEN` item | `<open_question>BODY</open_question>` at the end of the `sectionPath` section's own text (before any sub-heading), or at the end of the document when `sectionPath` is omitted |
+| Create an assumption | New `OPEN` item | `_Assumption: BODY_`, placed the same way (the body cannot contain `_` or line breaks) |
+| Edit or move (`OPEN` items only) | `body` and/or section updated | The marker changes or moves with the record; `sectionPath: null` moves it to the end of the document. Saving a draft `answer` alone never touches the text. |
+| Resolve a question | `RESOLVED`, `resolvedAt` set | The marker is replaced by the answer. A non-blank answer is required, passed now or saved earlier. |
+| Dismiss a question | `DISMISSED` | Unchanged: the marker stays |
+| Resolve an assumption | `RESOLVED`, `resolvedAt` set | The marker becomes the body as plain prose |
+| Dismiss an assumption | `DISMISSED` | The marker becomes `~~BODY~~ (not a valid assumption)` |
+| Reopen (`status: "OPEN"` alone) | `OPEN`; answer and `resolvedAt` cleared | An unresolved marker comes back; prose written by the earlier decision stays |
+| Delete | Removed permanently | Any marker still in the document is removed; prose written by an earlier resolution or dismissal stays |
+
+**Resolve, dismiss or delete?** Resolve when a question has its answer or an assumption holds. Dismiss when the item no longer applies: it stays on record and can be reopened. Delete only items created by mistake — deletion cannot be undone.
+
+A `RESOLVED` or `DISMISSED` item must be reopened (`status: "OPEN"` on its own) before its body, section or answer can change, or before it can move to the other final status. `body` and `sectionPath` cannot be combined with a status change, and `answer` applies to questions only. Repeating an item's current final status is a no-op.
+
+Failures to expect: `STALE_VERSION`, `STALE_QUESTION`, `MARKER_NOT_FOUND` (the marker was edited away — restore it or delete the item), `MARKER_AMBIGUOUS` (identical markers, or the same text already in that section), `SECTION_AMBIGUOUS`, `ANSWER_REQUIRED`, `INVALID_TRANSITION`, `SPEC_LOCKED`, `SPEC_ARCHIVED`, `TOKEN_SCOPE_MISMATCH` (also for a token without the `write` scope; the message names the exact reason), `VALIDATION_ERROR` and `NOT_FOUND`. `NOT_FOUND` also covers a `sectionPath` that matches no heading (`details.sectionPath`) and a reopen whose recorded heading no longer exists (`details.reason` is `ANCHOR_STALE`). Each failure carries a remediation plus the API's `details` (`hint`, `reason`, `fields`, `status`, `sectionPath`, `from`, `to`). A failed change changes nothing.
+
+> **Backend prerequisite** — these tools need a Kstonebase deployment whose API serves the open-question routes and whose Website proxies them under `/api/mcp/specifications/:specId/open-questions` (GET, POST) and `/api/mcp/specifications/:specId/open-questions/:questionId` (GET, PATCH, and DELETE with a JSON body). Against an older deployment, `read_open_question`, `create_open_question`, `update_open_question` and `delete_open_question` fail (typically `NOT_FOUND` or `INTERNAL_ERROR` from an HTTP 404 or 405), while `list_open_questions` keeps working without the `spec` metadata.
 
 ### Setup tools
 
@@ -400,6 +432,7 @@ Standard `https_proxy` / `HTTPS_PROXY` env vars are honoured.
 # From the monorepo root
 npm install
 npm run build
+npx vitest run   # tests
 ```
 
 Run the built server:
@@ -451,13 +484,25 @@ KSTONEBASE_API_TOKEN=YOUR_TOKEN \
 
 **`STALE_VERSION` from `update_specification_*`** — another writer landed between your read and your write. Re-call `read_specification` to get the current `version`, then retry.
 
-**`OPEN_QUESTIONS_PRESENT` from `request_review`** — call `list_open_questions` first, resolve them in the spec, then retry.
+**`OPEN_QUESTIONS_PRESENT` from `request_review`** — call `list_open_questions`, resolve or dismiss each item with `update_open_question` (ask the user for answers you don't have), then retry.
+
+**`STALE_QUESTION` from `update_open_question` / `delete_open_question`** — the item changed after your read. Call `read_open_question` for its current `updatedAt` and the spec's `version`, check that the change still makes sense, then retry with both.
+
+**`MARKER_NOT_FOUND` / `MARKER_AMBIGUOUS`** — the item's marker was edited away, or identical markers exist. Nothing was changed. Re-read the spec, restore or reword the marker text (or delete the item), then retry.
+
+**`SPEC_LOCKED` on a spec in Needs Review** — `start_new_version` does not unlock it; a human must move it back to Draft in Kstonebase.
+
+**Every open-question tool except `list_open_questions` fails with `NOT_FOUND` or `INTERNAL_ERROR`** — the Kstonebase deployment predates the open-question routes. See the backend prerequisite under [Open questions and assumptions](#open-questions-and-assumptions).
 
 **Legacy `.kstonebase.json` shape rejected at startup** — the binding format changed; the CLI prints a remediation pointing to the new shape. Update the file.
 
 **`ERR_MODULE_NOT_FOUND` under `npx`** — try `bunx` instead. It often resolves stale npm caches.
 
 **Plain-HTTP `apiUrl`** — only `localhost` / `127.0.0.1` / `::1` are allowed by default. For any other host, pass `--allow-insecure` (self-hosted dev only).
+
+## 📝 Changelog
+
+Release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 ## 📄 License
 
