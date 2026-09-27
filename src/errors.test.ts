@@ -375,6 +375,13 @@ describe("mapApiError — SPEC_LOCKED remediation by status", () => {
     expect(err.details?.hint).toBe("A human must move it Back to draft.");
   });
 
+  it("REVIEWED and NEEDS_REVIEW name the answering exception (contract §11)", () => {
+    expect(locked("REVIEWED").remediation).toContain("update_open_question with only its answer and status RESOLVED starts a new draft by itself");
+    expect(locked("NEEDS_REVIEW").remediation).toContain("update_open_question with only its answer and status RESOLVED moves it back to Draft by itself");
+    expect(locked().remediation).toContain("Answering an open question is the exception");
+    expect(locked("GENERATING").remediation).not.toContain("update_open_question");
+  });
+
   it("GENERATING → wait", () => {
     expect(locked("GENERATING").remediation).toContain("Wait for generation to finish");
   });
