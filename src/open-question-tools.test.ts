@@ -66,9 +66,9 @@ interface FakeReply {
 
 const LOCKED_HINTS: Record<string, string> = {
   REVIEWED:
-    "Answering an open question works here: update_open_question with its answer and status RESOLVED, and nothing else, starts a new draft by itself. For any other change, call start_new_version first.",
+    "Answering an open question (update_open_question with its answer and status RESOLVED) or accepting or rejecting an open assumption (status RESOLVED or DISMISSED), with nothing else, works here and starts a new draft by itself. For any other change, call start_new_version first.",
   NEEDS_REVIEW:
-    "The specification is waiting for review. Answering an open question works here: update_open_question with its answer and status RESOLVED, and nothing else, moves it back to Draft. For any other change a human must move it Back to draft in Kstonebase; start_new_version does not unlock Needs Review.",
+    "The specification is waiting for review. Answering an open question (update_open_question with its answer and status RESOLVED) or accepting or rejecting an open assumption (status RESOLVED or DISMISSED), with nothing else, works here and moves it back to Draft. For any other change a human must move it Back to draft in Kstonebase; start_new_version does not unlock Needs Review.",
   GENERATING: "Wait for generation to finish.",
 };
 
@@ -267,21 +267,23 @@ class FakeKstonebaseApi {
         hint: "restore the spec first",
       });
     }
-    // Like the API (contract §11): answering an OPEN question — status
-    // RESOLVED without body or sectionPath — is also accepted on a Needs
-    // Review or Reviewed spec and moves it to Draft; nothing else is.
+    // Like the API (contract §11 and its decision of 2026-09-26 on
+    // assumptions): settling an OPEN item — answering a question (RESOLVED),
+    // accepting or rejecting an assumption (RESOLVED or DISMISSED), without
+    // body or sectionPath — is also accepted on a Needs Review or Reviewed
+    // spec and moves it to Draft; nothing else is.
     const locked = () =>
       apiError(403, "SPEC_LOCKED", "Specification is not editable in its current status.", {
         code: "SPEC_LOCKED",
         status: spec.status,
         hint: LOCKED_HINTS[spec.status],
       });
-    const answering =
+    const settling =
       method === "PATCH" &&
-      payload.status === "RESOLVED" &&
+      (payload.status === "RESOLVED" || payload.status === "DISMISSED") &&
       !Object.hasOwn(payload, "body") &&
       !Object.hasOwn(payload, "sectionPath");
-    const reopens = answering && (spec.status === "NEEDS_REVIEW" || spec.status === "REVIEWED");
+    const reopens = settling && (spec.status === "NEEDS_REVIEW" || spec.status === "REVIEWED");
     if (spec.status !== "DRAFT" && !reopens) return locked();
     if (method !== "POST" && !row) return apiError(404, "NOT_FOUND", "Question not found.");
     if (payload.version !== spec.version) {
@@ -298,7 +300,9 @@ class FakeKstonebaseApi {
     }
 
     if (method === "POST") return this.create(spec.id, payload);
-    if (reopens && (row!.kind !== "QUESTION" || row!.status !== "OPEN")) return locked();
+    const settles =
+      row?.status === "OPEN" && (row.kind === "ASSUMPTION" || payload.status === "RESOLVED");
+    if (reopens && !settles) return locked();
     if (method === "PATCH" && reopens) {
       const before = spec.status;
       spec.status = "DRAFT";
@@ -586,7 +590,7 @@ const CONTRACT_DESCRIPTIONS: Record<string, string> = {
   create_open_question:
     'Add an open question (kind QUESTION, the default) or an assumption (kind ASSUMPTION) to a Draft Specification. The record and its inline marker are written together: <open_question>BODY</open_question> or _Assumption: BODY_ at the end of the section named by sectionPath (a heading such as "## Scope"), or at the end of the document when sectionPath is omitted. Requires the Specification\'s current version and advances it.',
   update_open_question:
-    "Edit, move, resolve, dismiss or reopen an open question or assumption on a Draft Specification. The record and the Markdown change together: resolving a question replaces its marker with the answer (an answer is required); dismissing a question keeps its marker; resolving an assumption turns it into plain prose; dismissing an assumption strikes it through as not valid; reopening restores an unresolved marker and keeps earlier decision prose. Answering is the one change that also works on a Specification in Needs Review or Reviewed: resolving an OPEN question with its answer (status RESOLVED, no body or sectionPath) moves the Specification to Draft in the same change, at the same version from Needs Review or as a new draft from Reviewed, so do not call start_new_version first. Body, sectionPath and answer change only while the item is OPEN. Requires version and expectedUpdatedAt from your latest read; after STALE_VERSION or STALE_QUESTION, re-read before retrying.",
+    "Edit, move, resolve, dismiss or reopen an open question or assumption on a Draft Specification. The record and the Markdown change together: resolving a question replaces its marker with the answer (an answer is required); dismissing a question keeps its marker; resolving an assumption turns it into plain prose; dismissing an assumption strikes it through as not valid; reopening restores an unresolved marker and keeps earlier decision prose. Answering a question and accepting or rejecting an assumption also work on a Specification in Needs Review or Reviewed: resolving an OPEN question with its answer, or resolving or dismissing an OPEN assumption (no body or sectionPath), moves the Specification to Draft in the same change, at the same version from Needs Review or as a new draft from Reviewed, so do not call start_new_version first. Body, sectionPath and answer change only while the item is OPEN. Requires version and expectedUpdatedAt from your latest read; after STALE_VERSION or STALE_QUESTION, re-read before retrying.",
   delete_open_question:
     "Permanently delete an open question or assumption from a Draft Specification. Removes the record and any marker still in the document; prose written by an earlier resolution or dismissal stays. This cannot be undone: to set an item aside, use update_open_question with status DISMISSED instead. Requires version and expectedUpdatedAt from your latest read.",
 };
@@ -1515,11 +1519,44 @@ describe("open-question tools — Product and Workspace scope", () => {
 
       const dismissed = await failure(mcp, "update_open_question", { ...tokens, status: "DISMISSED" });
       expect(dismissed.data).toMatchObject({ code: "SPEC_LOCKED", details: { status } });
-      expect(dismissed.data.remediation).toMatch(/update_open_question with only its answer and status RESOLVED/);
+      expect(dismissed.data.remediation).toMatch(/update_open_question with only the answer and status RESOLVED \(a question\)/);
 
       const answered = await ok(mcp, "update_open_question", { ...tokens, answer: "Finance.", status: "RESOLVED" });
       expect(answered.question).toMatchObject({ status: "RESOLVED", answer: "Finance." });
       expect(answered.spec).toMatchObject({ status: "DRAFT", version: tokens.version + 1, approvedVersion: 2 });
+      await close();
+    }
+  });
+
+  it("accepts or rejects an open assumption of a Needs Review or Reviewed spec: the spec comes back as a Draft (contract §11, 2026-09-26)", async () => {
+    for (const [status, decision] of [
+      ["NEEDS_REVIEW", "RESOLVED"],
+      ["REVIEWED", "DISMISSED"],
+    ] as const) {
+      const api = new FakeKstonebaseApi([{ ...PRODUCT_SPEC }]);
+      const { mcp, close } = await connectTo(fetcherFor(api));
+      const created = await ok(mcp, "create_open_question", {
+        specId: PRODUCT_SPEC.id,
+        version: PRODUCT_SPEC.version,
+        body: "Refunds are rare",
+        kind: "ASSUMPTION",
+      });
+      api.setStatus(PRODUCT_SPEC.id, status);
+      const tokens = {
+        specId: PRODUCT_SPEC.id,
+        questionId: created.question.id,
+        version: created.spec.version,
+        expectedUpdatedAt: created.question.updatedAt,
+      };
+
+      // A body change is not a settling request: still locked.
+      const edited = await failure(mcp, "update_open_question", { ...tokens, status: decision, body: "Refunds are common" });
+      expect(edited.data).toMatchObject({ code: "SPEC_LOCKED", details: { status } });
+      expect(edited.data.remediation).toMatch(/only status RESOLVED or DISMISSED \(an assumption\)/);
+
+      const settled = await ok(mcp, "update_open_question", { ...tokens, status: decision });
+      expect(settled.question).toMatchObject({ kind: "ASSUMPTION", status: decision });
+      expect(settled.spec).toMatchObject({ status: "DRAFT", version: tokens.version + 1, approvedVersion: 2 });
       await close();
     }
   });
@@ -1548,7 +1585,7 @@ describe("open-question tools — Product and Workspace scope", () => {
     });
     expect(err.data).toMatchObject({ code: "SPEC_LOCKED", details: { status: "REVIEWED" } });
     expect(err.data.remediation).toContain("Call start_new_version");
-    expect(err.data.remediation).toContain("Answering an open question needs no new version");
+    expect(err.data.remediation).toContain("Answering an open question or accepting or rejecting an open assumption needs no new version");
 
     err = await failure(mcp, "create_open_question", {
       specId: "s_archived",
