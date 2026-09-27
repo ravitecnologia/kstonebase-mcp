@@ -338,7 +338,7 @@ All tools take ids as strings. Bound Workspace/Product ids are inferred from `.k
 | `discard_draft`                | Roll a Draft (or Needs Review) back to its last approved version. Rejected on specs that have never been approved.                                                                                       |
 | `create_free_specification`    | Create a new Markdown spec in the bound Free product. Path uniqueness is enforced. Rejected with `PRODUCT_TYPE_MISMATCH` on Web Application Products — use `start_new_version` on a structured spec.     |
 | `create_open_question`         | Add a question (default) or an assumption to a Draft, together with its inline marker. Needs the spec `version`.                                                                                          |
-| `update_open_question`         | Edit, move, resolve, dismiss or reopen a question or assumption; the document text changes with it. Needs `version` and `expectedUpdatedAt`.                                                               |
+| `update_open_question`         | Edit, move, resolve, dismiss or reopen a question or assumption; the document text changes with it. Answering a question also works on a spec in Needs Review or Reviewed and moves it to Draft. Needs `version` and `expectedUpdatedAt`. |
 | `delete_open_question`         | **Permanently** delete a question or assumption and any marker still in the document. Needs `version` and `expectedUpdatedAt`. To set an item aside, dismiss it instead.                                   |
 
 > **Note** — the agent never calls "mark reviewed". Approval stays a human action in the Kstonebase UI. The MCP can only nudge a draft to `Needs Review`.
@@ -348,7 +348,8 @@ All tools take ids as strings. Bound Workspace/Product ids are inferred from `.k
 `list_open_questions`, `read_open_question`, `create_open_question`, `update_open_question` and `delete_open_question` manage the questions and assumptions of one specification. The Kstonebase API changes the record and its inline Markdown marker together, in one transaction, so the question list and the document never disagree.
 
 - **Scope** — every call names the specification (`specId`, plus `questionId` for a single item); the `.kstonebase.json` binding is not used. Product specifications (Free and Web Application) and Workspace specifications work the same way. The token needs access to that specification, and the `write` scope for changes.
-- **Draft only** — create, update and delete need a non-archived Draft. A Reviewed spec needs `start_new_version` first. A spec in Needs Review must be moved back to Draft by a human in Kstonebase — `start_new_version` does not unlock it. A generating spec must finish first. These tools never change `approvedVersion`, the spec status or human approval.
+- **Draft only, except answers** — create, update and delete need a non-archived Draft. A Reviewed spec needs `start_new_version` first. A spec in Needs Review must be moved back to Draft by a human in Kstonebase — `start_new_version` does not unlock it. A generating spec must finish first. These tools never change `approvedVersion` or human approval.
+- **Answering after review** — answering an `OPEN` question (`status: "RESOLVED"` with its `answer`, and no `body` or `sectionPath`) is the one change that also works on a spec in Needs Review or Reviewed. In the same change the spec moves to Draft: a Needs Review spec goes back to Draft at the same version, a Reviewed spec gets a new draft with the answer (its approved version stays published until a human approves the next one). Do not call `start_new_version` first; the response's `spec.status` is `DRAFT`. Every other change on those specs still fails with `SPEC_LOCKED`.
 - **Two concurrency tokens** — every change needs `version`, the spec's current version (from `read_specification`, `list_open_questions` or `read_open_question`). Updates and deletes also need `expectedUpdatedAt`: the item's `updatedAt`, copied exactly as returned. Each successful change returns the new `spec.version` and `question.updatedAt` for the next call. After `STALE_VERSION` or `STALE_QUESTION`, re-read and decide again. The server never retries a change; after a timeout, re-read before retrying, because the change may already have been applied.
 
 | Action | Record | Document text |
@@ -490,7 +491,7 @@ KSTONEBASE_API_TOKEN=YOUR_TOKEN \
 
 **`MARKER_NOT_FOUND` / `MARKER_AMBIGUOUS`** — the item's marker was edited away, or identical markers exist. Nothing was changed. Re-read the spec, restore or reword the marker text (or delete the item), then retry.
 
-**`SPEC_LOCKED` on a spec in Needs Review** — `start_new_version` does not unlock it; a human must move it back to Draft in Kstonebase.
+**`SPEC_LOCKED` on a spec in Needs Review** — `start_new_version` does not unlock it; a human must move it back to Draft in Kstonebase. Answering an open question is the exception: `update_open_question` with only `answer` and `status: "RESOLVED"` works and moves the spec back to Draft (older servers refuse it with `SPEC_LOCKED` too).
 
 **Every open-question tool except `list_open_questions` fails with `NOT_FOUND` or `INTERNAL_ERROR`** — the Kstonebase deployment predates the open-question routes. See the backend prerequisite under [Open questions and assumptions](#open-questions-and-assumptions).
 
