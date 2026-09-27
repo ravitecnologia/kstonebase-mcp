@@ -725,7 +725,7 @@ export function registerWriteTools(
     {
       title: "Request review on a draft",
       description:
-        "Move a Draft specification to Needs Review so a human can mark it Reviewed in Kstonebase. Gated on the spec having no open questions — if questions remain, the response returns OPEN_QUESTIONS_PRESENT and the agent should surface them to the user.",
+        "Move a Draft specification to Needs Review so a human can mark it Reviewed in Kstonebase. Open questions do not block it: they stay open for the reviewer. An older Kstonebase server may still refuse with OPEN_QUESTIONS_PRESENT; then surface the open questions to the user.",
       annotations: ADDITIVE_WRITE_TOOL,
       inputSchema: { specId: z.string().min(1) },
     },

@@ -334,7 +334,7 @@ All tools take ids as strings. Bound Workspace/Product ids are inferred from `.k
 | `update_specification_content` | Replace the full Markdown body of a Draft. OCC-guarded — pass the `version` from your most recent `read_specification`. Returns `STALE_VERSION` (409) if another writer landed first; re-read and retry. |
 | `update_specification_section` | Replace one heading-bound section (`sectionPath="## Pricing"`). OCC-guarded. Records a before-image revision. Pass `changeNote` to say why — it is stored as a change entry, not in the document.        |
 | `append_context`               | Record a decision or note **against** a spec as an immutable change entry. Does not modify the document, so it works on any non-archived spec and needs no `start_new_version`.                          |
-| `request_review`               | Move a Draft to `Needs Review` for a human to approve. Rejected with `OPEN_QUESTIONS_PRESENT` if questions remain — surface them to the user first.                                                      |
+| `request_review`               | Move a Draft to `Needs Review` for a human to approve. Open questions do not block it; they stay open for the reviewer (older servers may still answer `OPEN_QUESTIONS_PRESENT`).                     |
 | `discard_draft`                | Roll a Draft (or Needs Review) back to its last approved version. Rejected on specs that have never been approved.                                                                                       |
 | `create_free_specification`    | Create a new Markdown spec in the bound Free product. Path uniqueness is enforced. Rejected with `PRODUCT_TYPE_MISMATCH` on Web Application Products — use `start_new_version` on a structured spec.     |
 | `create_open_question`         | Add a question (default) or an assumption to a Draft, together with its inline marker. Needs the spec `version`.                                                                                          |
@@ -484,7 +484,7 @@ KSTONEBASE_API_TOKEN=YOUR_TOKEN \
 
 **`STALE_VERSION` from `update_specification_*`** — another writer landed between your read and your write. Re-call `read_specification` to get the current `version`, then retry.
 
-**`OPEN_QUESTIONS_PRESENT` from `request_review`** — call `list_open_questions`, resolve or dismiss each item with `update_open_question` (ask the user for answers you don't have), then retry.
+**`OPEN_QUESTIONS_PRESENT` from `request_review`** — only older Kstonebase servers return it; current ones accept review requests while questions are open. On an older server, call `list_open_questions`, resolve or dismiss each item with `update_open_question` (ask the user for answers you don't have), then retry.
 
 **`STALE_QUESTION` from `update_open_question` / `delete_open_question`** — the item changed after your read. Call `read_open_question` for its current `updatedAt` and the spec's `version`, check that the change still makes sense, then retry with both.
 

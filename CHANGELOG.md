@@ -2,6 +2,12 @@
 
 Notable changes to `@ravitecnologia/kstonebase-mcp`. Versions before 2.2.0 are described in the git history.
 
+## Unreleased
+
+### Changed
+
+- `request_review` no longer describes an open-question gate: Kstonebase accepts review requests, and Owners approve versions, while open questions remain (Kstonebase Business PDR-0007, changed 2026-09-26). The tool still maps `OPEN_QUESTIONS_PRESENT` from older servers.
+
 ## 2.2.0
 
 Additive release: agents can manage a specification's open questions and assumptions (Kstonebase MCP spec `features/mcp-open-question-management.md`).
