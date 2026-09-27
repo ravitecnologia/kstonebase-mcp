@@ -116,7 +116,7 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
   LEGACY_BINDING_DETECTED:
     'Edit .kstonebase.json: rename the "workspaceId" field to "productId" (the value points at a Product under the new model). To bind to a Workspace, create one and set both ids.',
   SPEC_LOCKED:
-    "The specification is not an editable Draft. If it is Reviewed, call start_new_version first. If it is in Needs Review, a human must move it back to Draft in Kstonebase (start_new_version does not unlock Needs Review). If it is generating, wait for it to finish. Answering an open question is the exception: update_open_question with only its answer and status RESOLVED also works on a Reviewed or Needs Review specification and moves it to Draft. Re-read before retrying.",
+    "The specification is not an editable Draft. If it is Reviewed, call start_new_version first. If it is in Needs Review, a human must move it back to Draft in Kstonebase (start_new_version does not unlock Needs Review). If it is generating, wait for it to finish. Answering an open question or accepting or rejecting an open assumption is the exception: update_open_question with only the answer and status RESOLVED (a question), or only status RESOLVED or DISMISSED (an assumption), also works on a Reviewed or Needs Review specification and moves it to Draft. Re-read before retrying.",
   SPEC_ARCHIVED:
     "The specification is archived, so it cannot be changed. A human must restore it in Kstonebase first; do not retry until it is restored.",
   OPEN_QUESTIONS_PRESENT:
@@ -147,13 +147,15 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
 
 // SPEC_LOCKED next steps depend on the specification's status (open-question
 // contract §4): only a Reviewed spec is unlocked by start_new_version, and
-// answering an open question works on Reviewed and Needs Review specs without
-// it (contract §11: the answer moves the spec to Draft by itself).
+// answering an open question, or accepting or rejecting an open assumption,
+// works on Reviewed and Needs Review specs without it (contract §11 and its
+// decision of 2026-09-26 on assumptions: the change moves the spec to Draft
+// by itself).
 const SPEC_LOCKED_BY_STATUS: Record<string, string> = {
   REVIEWED:
-    "The specification is Reviewed. Call start_new_version to open a Draft, re-read it for the new version, then retry. Answering an open question needs no new version: update_open_question with only its answer and status RESOLVED starts a new draft by itself.",
+    "The specification is Reviewed. Call start_new_version to open a Draft, re-read it for the new version, then retry. Answering an open question or accepting or rejecting an open assumption needs no new version: update_open_question with only the answer and status RESOLVED (a question), or only status RESOLVED or DISMISSED (an assumption), starts a new draft by itself.",
   NEEDS_REVIEW:
-    "The specification is in Needs Review. start_new_version does not unlock it: a human must move it back to Draft in Kstonebase. Ask the user, then re-read before retrying. Answering an open question is the exception: update_open_question with only its answer and status RESOLVED moves it back to Draft by itself.",
+    "The specification is in Needs Review. start_new_version does not unlock it: a human must move it back to Draft in Kstonebase. Ask the user, then re-read before retrying. Answering an open question or accepting or rejecting an open assumption is the exception: update_open_question with only the answer and status RESOLVED (a question), or only status RESOLVED or DISMISSED (an assumption), moves it back to Draft by itself.",
   GENERATING:
     "The specification is still generating. Wait for generation to finish, re-read it, then retry.",
 };
