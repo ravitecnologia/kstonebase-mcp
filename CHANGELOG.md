@@ -2,6 +2,13 @@
 
 Notable changes to `@ravitecnologia/kstonebase-mcp`. Versions before 2.2.0 are described in the git history.
 
+## Unreleased
+
+### Changed
+
+- `request_review` no longer describes an open-question gate: Kstonebase accepts review requests, and Owners approve versions, while open questions remain (Kstonebase Business PDR-0007, changed 2026-09-26). The tool still maps `OPEN_QUESTIONS_PRESENT` from older servers.
+- `update_open_question` describes answering after review: resolving an `OPEN` question with its answer (and no `body` or `sectionPath`) also works on a specification in Needs Review or Reviewed, and the Kstonebase API moves it to Draft in the same change — back to Draft at the same version from Needs Review, a new draft from Reviewed — so agents answer directly instead of calling `start_new_version` first (Kstonebase MCP spec `features/mcp-open-question-management.md` §11). The `SPEC_LOCKED` remediations for Reviewed and Needs Review specs name this exception. The description is byte-identical to the Kstonebase-hosted MCP endpoint's. Older servers still refuse such answers with `SPEC_LOCKED`.
+
 ## 2.2.0
 
 Additive release: agents can manage a specification's open questions and assumptions (Kstonebase MCP spec `features/mcp-open-question-management.md`).
