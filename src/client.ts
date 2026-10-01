@@ -3,7 +3,13 @@
 // `Authorization: Bearer kstonebase_pat_…`; no other auth artifacts are sent
 // (per Kstonebase spec "mcp-server" §5 "Auth header").
 
-import { McpToolError, mapApiError, type ApiErrorBody } from "./errors.js";
+import {
+  McpToolError,
+  boardRemediation,
+  mapApiError,
+  type ApiErrorBody,
+  type ErrorMappingMode,
+} from "./errors.js";
 
 export interface ClientOptions {
   apiUrl: string;
@@ -129,6 +135,77 @@ export interface UpdateOpenQuestionInput {
 export interface DeleteOpenQuestionInput {
   version: number;
   expectedUpdatedAt: string;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Native Board inputs (Kstonebase API › features/workspace-board.md §9 and
+// MCP › mcp-board-tools.md §2.1). Results are the API DTOs (Board, ItemPage,
+// ItemDetail, NotesPage, {item, replayed}, {note, replayed}); the client
+// passes them through unchanged, so they are typed as `unknown` here.
+// ──────────────────────────────────────────────────────────────────────────
+
+export type BoardItemType = "epic" | "feature" | "pbi";
+
+export type BoardItemState = "to_do" | "doing" | "done";
+
+export interface ListBoardItemsQuery {
+  type?: BoardItemType;
+  state?: BoardItemState;
+  parentId?: string;
+  /** A Product id, or "none" for Workspace-wide items. */
+  productId?: string;
+  /** A user id, or "none" for unassigned items. */
+  assigneeId?: string;
+  priority?: number;
+  tag?: string;
+  /** Sent as `q`: title substring, or `#12` / `12` for a display number. */
+  query?: string;
+  /** false (the API default) = active only; true = archived only. */
+  archived?: boolean;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface PageQuery {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface CreateBoardItemInput {
+  type: BoardItemType;
+  parentId?: string;
+  title: string;
+  description?: string;
+  priority?: number;
+  tags?: string[];
+  assigneeId?: string;
+  productId?: string;
+  acceptanceCriteria?: string;
+  implementationPrompt?: string;
+  /** Sent exactly as given; the package never generates or replaces it. */
+  idempotencyKey: string;
+}
+
+export interface UpdateBoardItemInput {
+  expectedVersion: number;
+  title?: string;
+  description?: string;
+  priority?: number;
+  tags?: string[];
+  /** null clears the assignee. */
+  assigneeId?: string | null;
+  /** null clears the Product. */
+  productId?: string | null;
+  acceptanceCriteria?: string;
+  implementationPrompt?: string;
+  state?: BoardItemState;
+  parentId?: string;
+}
+
+export interface AppendBoardItemNoteInput {
+  body: string;
+  /** Sent exactly as given; the package never generates or replaces it. */
+  idempotencyKey: string;
 }
 
 export interface ApiResponse<T> {
@@ -395,11 +472,195 @@ export class KstonebaseClient {
     );
   }
 
+  // ────────────────────────────────────────────────────────────────────
+  // Native Board (`/api/mcp/workspaces/:workspaceId/board…`). Every call
+  // names the Workspace explicitly; nothing here reads a Product binding.
+  // Errors map in "board" mode: the API's `details.code` is the tool code.
+  // Bodies carry only the keys that were given (explicit nulls are kept, so
+  // null clears assigneeId / productId on update). Nothing here retries, and
+  // idempotency keys and expected versions are forwarded exactly as given.
+  // ────────────────────────────────────────────────────────────────────
+
+  /** GET …/board → `Board`. */
+  readBoard(workspaceId: string): Promise<ApiResponse<unknown>> {
+    return this.getJson(boardPath(workspaceId), "board");
+  }
+
+  /** GET …/board/items → `ItemPage`. */
+  listBoardItems(
+    workspaceId: string,
+    query: ListBoardItemsQuery = {},
+  ): Promise<ApiResponse<unknown>> {
+    const qs = queryString({
+      type: query.type,
+      state: query.state,
+      parentId: query.parentId,
+      productId: query.productId,
+      assigneeId: query.assigneeId,
+      priority: query.priority,
+      tag: query.tag,
+      q: query.query,
+      archived: query.archived,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    return this.getJson(`${boardPath(workspaceId)}/items${qs}`, "board");
+  }
+
+  /** GET …/board/items/:itemId → `ItemDetail`. */
+  readBoardItem(
+    workspaceId: string,
+    itemId: string,
+  ): Promise<ApiResponse<unknown>> {
+    return this.getJson(boardItemPath(workspaceId, itemId), "board");
+  }
+
+  /** GET …/board/items/:itemId/notes → `NotesPage`. */
+  listBoardItemNotes(
+    workspaceId: string,
+    itemId: string,
+    query: PageQuery = {},
+  ): Promise<ApiResponse<unknown>> {
+    const qs = queryString({ limit: query.limit, cursor: query.cursor });
+    return this.getJson(
+      `${boardItemPath(workspaceId, itemId)}/notes${qs}`,
+      "board",
+    );
+  }
+
+  /** POST …/board/items → 201 `{ item, replayed }`. */
+  createBoardItem(
+    workspaceId: string,
+    input: CreateBoardItemInput,
+  ): Promise<ApiResponse<unknown>> {
+    return this.sendJson(
+      "POST",
+      `${boardPath(workspaceId)}/items`,
+      definedOnly({
+        type: input.type,
+        parentId: input.parentId,
+        title: input.title,
+        description: input.description,
+        priority: input.priority,
+        tags: input.tags,
+        assigneeId: input.assigneeId,
+        productId: input.productId,
+        acceptanceCriteria: input.acceptanceCriteria,
+        implementationPrompt: input.implementationPrompt,
+        idempotencyKey: input.idempotencyKey,
+      }),
+      "board",
+    );
+  }
+
+  /** PATCH …/board/items/:itemId with only the provided fields → `ItemDetail`. */
+  updateBoardItem(
+    workspaceId: string,
+    itemId: string,
+    input: UpdateBoardItemInput,
+  ): Promise<ApiResponse<unknown>> {
+    return this.sendJson(
+      "PATCH",
+      boardItemPath(workspaceId, itemId),
+      definedOnly({
+        expectedVersion: input.expectedVersion,
+        title: input.title,
+        description: input.description,
+        priority: input.priority,
+        tags: input.tags,
+        assigneeId: input.assigneeId,
+        productId: input.productId,
+        acceptanceCriteria: input.acceptanceCriteria,
+        implementationPrompt: input.implementationPrompt,
+        state: input.state,
+        parentId: input.parentId,
+      }),
+      "board",
+    );
+  }
+
+  /** POST …/board/items/:itemId/specifications → `ItemDetail`. */
+  linkBoardSpecification(
+    workspaceId: string,
+    itemId: string,
+    input: { specificationId: string; expectedVersion: number },
+  ): Promise<ApiResponse<unknown>> {
+    return this.sendJson(
+      "POST",
+      `${boardItemPath(workspaceId, itemId)}/specifications`,
+      {
+        expectedVersion: input.expectedVersion,
+        specificationId: input.specificationId,
+      },
+      "board",
+    );
+  }
+
+  /** DELETE …/board/items/:itemId/specifications/:specificationId with a JSON body → `ItemDetail`. */
+  unlinkBoardSpecification(
+    workspaceId: string,
+    itemId: string,
+    specificationId: string,
+    input: { expectedVersion: number },
+  ): Promise<ApiResponse<unknown>> {
+    return this.sendJson(
+      "DELETE",
+      `${boardItemPath(workspaceId, itemId)}/specifications/${boardSegment("specificationId", specificationId)}`,
+      { expectedVersion: input.expectedVersion },
+      "board",
+    );
+  }
+
+  /** POST …/board/items/:itemId/notes → 201 `{ note, replayed }`. */
+  appendBoardItemNote(
+    workspaceId: string,
+    itemId: string,
+    input: AppendBoardItemNoteInput,
+  ): Promise<ApiResponse<unknown>> {
+    return this.sendJson(
+      "POST",
+      `${boardItemPath(workspaceId, itemId)}/notes`,
+      { body: input.body, idempotencyKey: input.idempotencyKey },
+      "board",
+    );
+  }
+
+  /** POST …/board/items/:itemId/archive → `ItemDetail` (Workspace Owner only). */
+  archiveBoardItem(
+    workspaceId: string,
+    itemId: string,
+    input: { expectedVersion: number },
+  ): Promise<ApiResponse<unknown>> {
+    return this.sendJson(
+      "POST",
+      `${boardItemPath(workspaceId, itemId)}/archive`,
+      { expectedVersion: input.expectedVersion },
+      "board",
+    );
+  }
+
+  /** POST …/board/items/:itemId/restore → `ItemDetail` (Workspace Owner only). */
+  restoreBoardItem(
+    workspaceId: string,
+    itemId: string,
+    input: { expectedVersion: number },
+  ): Promise<ApiResponse<unknown>> {
+    return this.sendJson(
+      "POST",
+      `${boardItemPath(workspaceId, itemId)}/restore`,
+      { expectedVersion: input.expectedVersion },
+      "board",
+    );
+  }
+
   /** Convenience for endpoints that never send If-None-Match — narrows the
    *  union so callers don't have to discriminate on `notModified`. The body
    *  type is the documented API shape; it is not validated at runtime. */
-  private async getJson<T = unknown>(path: string): Promise<ApiResponse<T>> {
-    const res = await this.get(path);
+  private async getJson<T = unknown>(
+    path: string,
+    mode: ErrorMappingMode = "default",
+  ): Promise<ApiResponse<T>> {
+    const res = await this.get(path, undefined, mode);
     if ("notModified" in res) {
       // Should not happen — getJson never asks for conditional requests.
       throw new Error("Unexpected 304 on a non-conditional request.");
@@ -415,6 +676,7 @@ export class KstonebaseClient {
     method: "POST" | "PATCH" | "DELETE",
     path: string,
     body: unknown,
+    mode: ErrorMappingMode = "default",
   ): Promise<ApiResponse<T>> {
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.token}`,
@@ -422,11 +684,15 @@ export class KstonebaseClient {
     };
     if (body !== undefined) headers["content-type"] = "application/json";
 
-    const res = await this.fetcher(`${this.apiUrl}${path}`, {
-      method,
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    const res = await this.fetchOnce(
+      `${this.apiUrl}${path}`,
+      {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      },
+      mode,
+    );
 
     const text = await res.text();
     const parsed =
@@ -435,7 +701,7 @@ export class KstonebaseClient {
         : null;
 
     if (!res.ok) {
-      throw mapApiError(res.status, parsed as ApiErrorBody | null);
+      throw mapApiError(res.status, parsed as ApiErrorBody | null, mode);
     }
 
     return {
@@ -605,6 +871,7 @@ export class KstonebaseClient {
   private async get(
     path: string,
     ifNoneMatch?: string,
+    mode: ErrorMappingMode = "default",
   ): Promise<ApiResponse<unknown> | NotModified> {
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.token}`,
@@ -612,10 +879,11 @@ export class KstonebaseClient {
     };
     if (ifNoneMatch) headers["if-none-match"] = ifNoneMatch;
 
-    const res = await this.fetcher(`${this.apiUrl}${path}`, {
-      method: "GET",
-      headers,
-    });
+    const res = await this.fetchOnce(
+      `${this.apiUrl}${path}`,
+      { method: "GET", headers },
+      mode,
+    );
 
     if (res.status === 304) {
       return {
@@ -632,7 +900,7 @@ export class KstonebaseClient {
         : null;
 
     if (!res.ok) {
-      throw mapApiError(res.status, body as ApiErrorBody | null);
+      throw mapApiError(res.status, body as ApiErrorBody | null, mode);
     }
 
     return {
@@ -640,6 +908,29 @@ export class KstonebaseClient {
       etag: res.headers.get("etag"),
       status: res.status,
     };
+  }
+
+  /**
+   * One HTTP attempt, never retried. A request that fails in flight on a
+   * Board call becomes INTERNAL_ERROR with the Board remediation (re-read
+   * first; retry a create or note only with the same idempotencyKey). Other
+   * tools keep their existing behaviour (the error propagates as is).
+   */
+  private async fetchOnce(
+    url: string,
+    init: RequestInit,
+    mode: ErrorMappingMode,
+  ): Promise<Response> {
+    if (mode !== "board") return this.fetcher(url, init);
+    try {
+      return await this.fetcher(url, init);
+    } catch (err) {
+      throw new McpToolError(
+        "INTERNAL_ERROR",
+        `The request did not complete: ${(err as Error)?.message ?? String(err)}`,
+        boardRemediation("INTERNAL_ERROR"),
+      );
+    }
   }
 }
 
@@ -673,6 +964,42 @@ function pathSegment(name: string, id: string): string {
     );
   }
   return encodeURIComponent(id);
+}
+
+function boardPath(workspaceId: string): string {
+  return `/api/mcp/workspaces/${boardSegment("workspaceId", workspaceId)}/board`;
+}
+
+function boardItemPath(workspaceId: string, itemId: string): string {
+  return `${boardPath(workspaceId)}/items/${boardSegment("itemId", itemId)}`;
+}
+
+/** pathSegment with a Board remediation. */
+function boardSegment(name: string, id: string): string {
+  if (id === "" || id === "." || id === "..") {
+    throw new McpToolError(
+      "VALIDATION_ERROR",
+      `${name} must be a non-empty id other than "." or "..".`,
+      "Pass the id exactly as returned by list_workspaces, list_board_items, read_board_item or the specification tools.",
+    );
+  }
+  return encodeURIComponent(id);
+}
+
+/**
+ * Build a query string ("" or "?…") from the defined values only. Numbers
+ * and booleans are sent as their string form (`archived=false` stays
+ * explicit when the agent passed false).
+ */
+function queryString(
+  params: Record<string, string | number | boolean | undefined>,
+): string {
+  const sp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) sp.set(key, String(value));
+  }
+  const qs = sp.toString();
+  return qs ? `?${qs}` : "";
 }
 
 /** Copy only the keys whose value is not undefined; nulls are kept. */

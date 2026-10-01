@@ -1,6 +1,7 @@
 // Cross-transport parity (Kstonebase MCP spec "mcp-server" §3 "tool schemas
 // are byte-identical to the stdio surface"; "mcp-open-question-management"
-// §7.8). The same scripted open-question session runs over:
+// §7.8; "mcp-board-tools" §2.1). The same scripted open-question and native
+// Board session runs over:
 //   * an in-memory transport against buildServer(),
 //   * the real --http transport (startHttpServer),
 //   * the real stdio CLI, spawned as a child process (src/cli.ts via tsx),
@@ -59,6 +60,42 @@ const STALE_QUESTION_ERROR = {
   },
 };
 
+// Native Board fixtures (MCP › mcp-board-tools.md §2.1; API DTOs §9.5).
+const BOARD_ITEM_FIXTURE = {
+  id: "bi_1",
+  workspaceId: "ws_1",
+  displayNumber: 1,
+  type: "epic",
+  parentId: null,
+  parent: null,
+  state: "to_do",
+  title: "Board",
+  priority: 2,
+  tags: [],
+  assignee: null,
+  product: null,
+  childCounts: { total: 0, done: 0 },
+  specifications: [{ specificationId: "s_gone", available: false }],
+  version: 1,
+  archivedAt: null,
+  createdAt: "2026-10-01T12:00:00Z",
+  updatedAt: "2026-10-01T12:00:00Z",
+  description: "",
+  acceptanceCriteria: "",
+  implementationPrompt: "",
+  createdBy: null,
+  notes: [],
+  notesTotal: 0,
+};
+
+const BOARD_STALE_ERROR = {
+  error: {
+    code: "CONFLICT",
+    message: "The work item changed since you read it.",
+    details: { code: "STALE_VERSION", currentVersion: 2, item: { id: "bi_1", version: 2 } },
+  },
+};
+
 interface SeenRequest {
   method: string;
   path: string;
@@ -78,6 +115,13 @@ function route(method: string, path: string): { status: number; json: unknown } 
   if (method === "GET" && path === item) return { status: 200, json: QUESTION_FIXTURE };
   if (method === "PATCH" && path === item) return { status: 409, json: STALE_QUESTION_ERROR };
   if (method === "DELETE" && path === item) return { status: 200, json: DELETE_FIXTURE };
+  const board = "/api/mcp/workspaces/ws_1/board";
+  if (method === "GET" && path === `${board}/items?type=epic&q=Board&limit=5`) {
+    return { status: 200, json: { items: [BOARD_ITEM_FIXTURE], total: 1, counts: { to_do: 1, doing: 0, done: 0 }, limit: 5, nextCursor: null } };
+  }
+  if (method === "POST" && path === `${board}/items`) return { status: 201, json: { item: BOARD_ITEM_FIXTURE, replayed: false } };
+  if (method === "PATCH" && path === `${board}/items/bi_1`) return { status: 409, json: BOARD_STALE_ERROR };
+  if (method === "DELETE" && path === `${board}/items/bi_1/specifications/s_1`) return { status: 200, json: BOARD_ITEM_FIXTURE };
   return { status: 404, json: { error: { code: "NOT_FOUND", message: "Not found." } } };
 }
 
@@ -151,6 +195,20 @@ const OPEN_QUESTION_TOOLS = [
   "delete_open_question",
 ];
 
+const BOARD_TOOLS = [
+  "read_board",
+  "list_board_items",
+  "read_board_item",
+  "list_board_item_notes",
+  "create_board_item",
+  "update_board_item",
+  "link_board_specification",
+  "unlink_board_specification",
+  "append_board_item_note",
+  "archive_board_item",
+  "restore_board_item",
+];
+
 /** The scripted session every transport runs. */
 async function runSession(client: Client): Promise<SessionRecord> {
   seen = [];
@@ -175,6 +233,12 @@ async function runSession(client: Client): Promise<SessionRecord> {
       "delete_open_question",
       { specId: "s_1", questionId: "q_1", version: 14, expectedUpdatedAt: "2026-09-26T18:04:05.123Z" },
     ],
+    // Native Board tools: no binding in these sessions, so workspaceId is explicit.
+    ["list_board_items", { workspaceId: "ws_1", type: "epic", query: "Board", limit: 5 }],
+    ["create_board_item", { workspaceId: "ws_1", type: "epic", title: "Board", idempotencyKey: "parity-create-1" }],
+    ["update_board_item", { workspaceId: "ws_1", itemId: "bi_1", expectedVersion: 1, assigneeId: null, state: "doing" }],
+    ["unlink_board_specification", { workspaceId: "ws_1", itemId: "bi_1", specificationId: "s_1", expectedVersion: 2 }],
+    ["read_board", {}],
   ];
   for (const [name, args] of calls) {
     const res = await client.callTool({ name, arguments: args });
@@ -240,7 +304,7 @@ async function stdioSession(): Promise<SessionRecord> {
 
 describe("stdio and HTTP transports", () => {
   it(
-    "advertise the same tools and forward open-question calls identically",
+    "advertise the same tools and forward open-question and Board calls identically",
     async () => {
       const memory = await inMemorySession();
       const http = await httpSession();
@@ -250,7 +314,7 @@ describe("stdio and HTTP transports", () => {
       expect(JSON.stringify(http.tools)).toBe(JSON.stringify(memory.tools));
       expect(JSON.stringify(stdio.tools)).toBe(JSON.stringify(memory.tools));
       const names = (memory.tools as Array<{ name: string }>).map((t) => t.name);
-      for (const name of OPEN_QUESTION_TOOLS) expect(names).toContain(name);
+      for (const name of [...OPEN_QUESTION_TOOLS, ...BOARD_TOOLS]) expect(names).toContain(name);
 
       // Same results, including the structured STALE_QUESTION failure.
       expect(http.results).toEqual(memory.results);
@@ -265,6 +329,15 @@ describe("stdio and HTTP transports", () => {
         },
       });
       expect(memory.results[4]).toMatchObject({ isError: false, structuredContent: DELETE_FIXTURE });
+      expect(memory.results[5]).toMatchObject({ isError: false, structuredContent: { total: 1, items: [BOARD_ITEM_FIXTURE] } });
+      expect(memory.results[6]).toMatchObject({ isError: false, structuredContent: { item: BOARD_ITEM_FIXTURE, replayed: false } });
+      expect(memory.results[7]).toMatchObject({
+        isError: true,
+        structuredContent: { code: "STALE_VERSION", details: { currentVersion: 2 } },
+      });
+      expect(memory.results[8]).toMatchObject({ isError: false, structuredContent: BOARD_ITEM_FIXTURE });
+      // No Workspace binding: read_board fails locally on every transport.
+      expect(memory.results[9]).toMatchObject({ isError: true, structuredContent: { code: "WORKSPACE_NOT_BOUND" } });
 
       // Same requests at the API: one per call, no retries, Bearer only.
       expect(http.requests).toEqual(memory.requests);
@@ -314,6 +387,38 @@ describe("stdio and HTTP transports", () => {
           cookie: undefined,
           contentType: "application/json",
           body: { version: 14, expectedUpdatedAt: "2026-09-26T18:04:05.123Z" },
+        },
+        {
+          method: "GET",
+          path: "/api/mcp/workspaces/ws_1/board/items?type=epic&q=Board&limit=5",
+          authorization: `Bearer ${TOKEN}`,
+          cookie: undefined,
+          contentType: undefined,
+          body: undefined,
+        },
+        {
+          method: "POST",
+          path: "/api/mcp/workspaces/ws_1/board/items",
+          authorization: `Bearer ${TOKEN}`,
+          cookie: undefined,
+          contentType: "application/json",
+          body: { type: "epic", title: "Board", idempotencyKey: "parity-create-1" },
+        },
+        {
+          method: "PATCH",
+          path: "/api/mcp/workspaces/ws_1/board/items/bi_1",
+          authorization: `Bearer ${TOKEN}`,
+          cookie: undefined,
+          contentType: "application/json",
+          body: { expectedVersion: 1, assigneeId: null, state: "doing" },
+        },
+        {
+          method: "DELETE",
+          path: "/api/mcp/workspaces/ws_1/board/items/bi_1/specifications/s_1",
+          authorization: `Bearer ${TOKEN}`,
+          cookie: undefined,
+          contentType: "application/json",
+          body: { expectedVersion: 2 },
         },
       ]);
     },

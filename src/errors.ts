@@ -1,7 +1,8 @@
-// MCP-side error mapping (per Kstonebase spec "mcp-server" §5 "Error mapping"
-// and "mcp-open-question-management" §6). Translates Kstonebase API error
-// envelopes into MCP error codes the agent can reason about, each carrying a
-// short remediation string plus the API's actionable details.
+// MCP-side error mapping (per Kstonebase spec "mcp-server" §5 "Error mapping",
+// "mcp-open-question-management" §6 and "mcp-board-tools" §2.1). Translates
+// Kstonebase API error envelopes into MCP error codes the agent can reason
+// about, each carrying a short remediation string plus the API's actionable
+// details.
 
 export type McpStructuredCode =
   | "AUTH_FAILED"
@@ -29,7 +30,24 @@ export type McpStructuredCode =
   | "RATE_LIMITED"
   | "NOT_FOUND"
   | "VALIDATION_ERROR"
-  | "INTERNAL_ERROR";
+  | "INTERNAL_ERROR"
+  // Native Board codes (Kstonebase API › features/workspace-board.md §9.3).
+  | "BOARD_UNAVAILABLE"
+  | "ITEM_NOT_FOUND"
+  | "WORKSPACE_ARCHIVED"
+  | "OWNER_REQUIRED"
+  | "INVALID_PARENT"
+  | "INVALID_ASSIGNEE"
+  | "INVALID_PRODUCT"
+  | "INVALID_CURSOR"
+  | "IDEMPOTENCY_KEY_REUSED"
+  | "ACTIVE_CHILDREN"
+  | "PARENT_ARCHIVED"
+  | "ITEM_ARCHIVED"
+  | "ITEM_NOT_ARCHIVED"
+  | "SPECIFICATION_UNAVAILABLE"
+  | "SPECIFICATION_ARCHIVED"
+  | "LINK_LIMIT_REACHED";
 
 export interface ApiErrorBody {
   error?: {
@@ -56,7 +74,33 @@ const ACTIONABLE_DETAIL_KEYS = [
 
 export type ActionableDetailKey = (typeof ACTIONABLE_DETAIL_KEYS)[number];
 
-export type McpFailureDetails = Partial<Record<ActionableDetailKey, unknown>>;
+/**
+ * The `error.details` keys a Board tool passes on (MCP › mcp-board-tools.md
+ * §2.1). Anything else the Board API sends — notably the full current `item`
+ * that accompanies STALE_VERSION — is dropped: the agent re-reads instead.
+ */
+const BOARD_DETAIL_KEYS = [
+  "field",
+  "problem",
+  "currentVersion",
+  "activeChildren",
+  "limit",
+  "hint",
+] as const;
+
+export type BoardDetailKey = (typeof BOARD_DETAIL_KEYS)[number];
+
+export type McpFailureDetails = Partial<
+  Record<ActionableDetailKey | BoardDetailKey, unknown>
+>;
+
+/**
+ * How an API error is mapped. "board" is used by the native Board tools only:
+ * there the API's `details.code` is always the tool error code, credential
+ * codes included (MCP › mcp-board-tools.md §2.1), and Board remediations and
+ * details apply. "default" keeps the existing vocabulary for every other tool.
+ */
+export type ErrorMappingMode = "default" | "board";
 
 export interface McpFailure {
   code: McpStructuredCode;
@@ -143,6 +187,55 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
     "Inspect the details — at least one argument failed validation. Fix the arguments instead of retrying them unchanged.",
   INTERNAL_ERROR:
     "The Kstonebase API hit an unexpected error. Retry a read once. Before retrying a write, re-read the current state: the change may already have been applied. If it persists, contact support.",
+  BOARD_UNAVAILABLE:
+    "This Workspace has no native Board: only Software Engineering Workspaces have one. Check workspaceId with list_workspaces. Report it to the user instead of falling back to another board.",
+  ITEM_NOT_FOUND:
+    "No such work item on this Workspace's Board. Use an id returned by list_board_items or read_board_item for this same Workspace; never guess ids.",
+  WORKSPACE_ARCHIVED:
+    "The Workspace is archived, so its Board is read-only. Reads still work; a human must restore the Workspace in Kstonebase before any change.",
+  OWNER_REQUIRED:
+    "Only the Workspace Owner can archive or restore work items. Ask the Owner to do it; retrying with the same credential will not help.",
+  INVALID_PARENT:
+    "The parent is not valid (details.problem: required, not-found, wrong-type, archived or epic-has-no-parent). An Epic has no parent, a Feature needs an active Epic and a PBI an active Feature of the same Workspace. Pick a valid parent with list_board_items, then retry.",
+  INVALID_ASSIGNEE:
+    "The assignee must be the Workspace Owner or a current Member. Pass a valid user id, or leave assigneeId out (on update, null clears it).",
+  INVALID_PRODUCT:
+    "productId must be an active Product currently in this Workspace (see list_products). Pass a valid id, or leave productId out (on update, null clears it).",
+  INVALID_CURSOR:
+    "The cursor is not valid for this list. Start again from the first page without a cursor and pass nextCursor back exactly as returned.",
+  IDEMPOTENCY_KEY_REUSED:
+    "This idempotencyKey was already used for a different request, so nothing was changed. Reuse a key only to retry the exact same request; use a new key for a genuinely new item or note.",
+  ACTIVE_CHILDREN:
+    "The work item still has active children (details.activeChildren), so it cannot be archived. Archive or move the children first, re-read the item, then retry.",
+  PARENT_ARCHIVED:
+    "The work item's parent is archived, so it cannot be restored. Restore the parent first, re-read the item, then retry.",
+  ITEM_ARCHIVED:
+    "The work item is archived, so it cannot be changed, linked or noted. The Workspace Owner can restore it with restore_board_item first.",
+  ITEM_NOT_ARCHIVED:
+    "The work item is not archived, so there is nothing to restore. Re-read it with read_board_item.",
+  SPECIFICATION_UNAVAILABLE:
+    "That specification cannot be linked from this Board: it is unknown, deleted, in another Workspace, or in a Product that is no longer in this Workspace. Find it with search_specifications or list_specifications and link it by its canonical id.",
+  SPECIFICATION_ARCHIVED:
+    "The specification is archived, so it cannot be linked. Link an active specification, or ask a human to restore it first.",
+  LINK_LIMIT_REACHED:
+    "The work item already links the maximum number of specifications (details.limit). Unlink one with unlink_board_specification before linking another.",
+};
+
+// Board-specific wording for shared codes (MCP › mcp-board-tools.md §2.1,
+// §3 and §4). Used only in "board" mode, so every other tool keeps its text.
+const BOARD_REMEDIATIONS: Partial<Record<McpStructuredCode, string>> = {
+  STALE_VERSION:
+    "Someone else changed this work item after your read (details.currentVersion is its version now), so nothing was changed. Re-read it with read_board_item, reconcile your change with the current values, then retry with the new version as expectedVersion. Never replay the old request blindly or overwrite another person's change.",
+  WORKSPACE_SCOPE_REQUIRED:
+    "Board tools need a whole-Workspace credential, and this one is restricted to Products, so it never reaches the Workspace Board. Use a token bound to the Workspace (or to all Workspaces) and set workspaceId in .kstonebase.json. A productId binding never widens a credential.",
+  TOKEN_SCOPE_MISMATCH:
+    "This credential is pinned to another Workspace, so it cannot reach this Board. Pass the Workspace the credential is bound to, or use a credential for this Workspace.",
+  NOT_FOUND:
+    "The Workspace doesn't exist or you are not its Owner or a current Member (Product membership alone grants no Board access). Check workspaceId with list_workspaces.",
+  VALIDATION_ERROR:
+    "An argument failed validation (details.field and details.problem say which and why). Fix that argument instead of retrying it unchanged.",
+  INTERNAL_ERROR:
+    "The Kstonebase API hit an unexpected error. Retry a read once. Before retrying a write, re-read the work item: the change may already have been applied. Retry create_board_item or append_board_item_note only with the same idempotencyKey, never a new one.",
 };
 
 // SPEC_LOCKED next steps depend on the specification's status (open-question
@@ -204,6 +297,53 @@ const ENVELOPE_FIRST_CODES: Readonly<Record<string, McpStructuredCode>> = {
   NOT_IN_WORKSPACE: "NOT_IN_WORKSPACE",
 };
 
+// A Board route answered without any Kstonebase error code (typically an
+// HTML 404/405 page): the deployment most likely predates the native Board
+// (MCP › mcp-board-tools.md §4: explain missing server support).
+const BOARD_ROUTE_UNSUPPORTED =
+  "The Kstonebase server answered without a Board error code, so this deployment probably does not serve the native Board tools yet. Ask an administrator to update Kstonebase; the other tools keep working. Do not fall back to another board silently.";
+
+/** The remediation a Board tool reports for `code`. */
+export function boardRemediation(code: McpStructuredCode): string {
+  return BOARD_REMEDIATIONS[code] ?? REMEDIATIONS[code];
+}
+
+// Board refusals carry their specific code in `details.code` under a generic
+// envelope (BAD_REQUEST, FORBIDDEN, NOT_FOUND, CONFLICT). In "board" mode that
+// code is the tool error code, including the credential refusals the MCP
+// routes send before any Board read (WORKSPACE_SCOPE_REQUIRED,
+// TOKEN_SCOPE_MISMATCH, TOKEN_SCOPE_INSUFFICIENT).
+const BOARD_DETAIL_CODES: Readonly<Record<string, McpStructuredCode>> = {
+  NOT_FOUND: "NOT_FOUND",
+  VALIDATION_ERROR: "VALIDATION_ERROR",
+  STALE_VERSION: "STALE_VERSION",
+  BOARD_UNAVAILABLE: "BOARD_UNAVAILABLE",
+  ITEM_NOT_FOUND: "ITEM_NOT_FOUND",
+  WORKSPACE_ARCHIVED: "WORKSPACE_ARCHIVED",
+  OWNER_REQUIRED: "OWNER_REQUIRED",
+  INVALID_PARENT: "INVALID_PARENT",
+  INVALID_ASSIGNEE: "INVALID_ASSIGNEE",
+  INVALID_PRODUCT: "INVALID_PRODUCT",
+  INVALID_CURSOR: "INVALID_CURSOR",
+  IDEMPOTENCY_KEY_REUSED: "IDEMPOTENCY_KEY_REUSED",
+  ACTIVE_CHILDREN: "ACTIVE_CHILDREN",
+  PARENT_ARCHIVED: "PARENT_ARCHIVED",
+  ITEM_ARCHIVED: "ITEM_ARCHIVED",
+  ITEM_NOT_ARCHIVED: "ITEM_NOT_ARCHIVED",
+  SPECIFICATION_UNAVAILABLE: "SPECIFICATION_UNAVAILABLE",
+  SPECIFICATION_ARCHIVED: "SPECIFICATION_ARCHIVED",
+  LINK_LIMIT_REACHED: "LINK_LIMIT_REACHED",
+  WORKSPACE_SCOPE_REQUIRED: "WORKSPACE_SCOPE_REQUIRED",
+  TOKEN_SCOPE_MISMATCH: "TOKEN_SCOPE_MISMATCH",
+  TOKEN_SCOPE_INSUFFICIENT: "TOKEN_SCOPE_INSUFFICIENT",
+  AUTH_REQUIRED: "AUTH_FAILED",
+  AUTH_FAILED: "AUTH_FAILED",
+  TOKEN_EXPIRED: "TOKEN_EXPIRED",
+  TOKEN_REVOKED: "TOKEN_REVOKED",
+  RATE_LIMITED: "RATE_LIMITED",
+  INTERNAL_ERROR: "INTERNAL_ERROR",
+};
+
 /**
  * Map an HTTP response (status + parsed body) onto an `McpToolError`.
  * Specification and question codes are read from `error.details.code` first;
@@ -211,21 +351,37 @@ const ENVELOPE_FIRST_CODES: Readonly<Record<string, McpStructuredCode>> = {
  * `details.code`, then the status code's standard meaning). Actionable
  * details (hint, reason, fields, status, sectionPath, from, to) travel with
  * the error so the agent can re-read and decide instead of retrying blindly.
+ *
+ * In "board" mode (native Board tools only) every known `details.code` wins,
+ * the Board remediations apply and the Board detail allowlist (field,
+ * problem, currentVersion, activeChildren, limit, hint) is passed on.
  */
 export function mapApiError(
   status: number,
   body: ApiErrorBody | null,
+  mode: ErrorMappingMode = "default",
 ): McpToolError {
   const apiCode = body?.error?.code;
   const apiMessage =
     body?.error?.message ?? `Request failed with status ${status}.`;
   const rawDetails = body?.error?.details;
-  const { code, source } = pickStructuredCode(
-    status,
-    apiCode,
-    extractDetailCode(rawDetails),
-  );
-  const details = pickActionableDetails(rawDetails);
+  const detailCode = extractDetailCode(rawDetails);
+  if (mode === "board") {
+    const { code } = pickBoardCode(status, apiCode, detailCode);
+    const details = pickDetails(rawDetails, BOARD_DETAIL_KEYS);
+    const unsupported =
+      apiCode === undefined &&
+      detailCode === undefined &&
+      (status === 404 || status === 405 || status === 501);
+    return new McpToolError(
+      code,
+      apiMessage,
+      unsupported ? BOARD_ROUTE_UNSUPPORTED : boardRemediation(code),
+      details,
+    );
+  }
+  const { code, source } = pickStructuredCode(status, apiCode, detailCode);
+  const details = pickDetails(rawDetails, ACTIONABLE_DETAIL_KEYS);
   return new McpToolError(
     code,
     apiMessage,
@@ -264,6 +420,21 @@ function pickStructuredCode(
   return { code: "INTERNAL_ERROR" };
 }
 
+function pickBoardCode(
+  status: number,
+  apiCode: string | undefined,
+  detailCode: string | undefined,
+): PickedCode {
+  const specific =
+    lookupCode(BOARD_DETAIL_CODES, detailCode) ??
+    lookupCode(BOARD_DETAIL_CODES, apiCode);
+  if (specific) return { code: specific, source: detailCode ?? apiCode };
+  // A body without a known code (for example a proxy error page): a 400 is
+  // still a refused argument, everything else keeps the shared fallback.
+  if (status === 400) return { code: "VALIDATION_ERROR" };
+  return pickStructuredCode(status, apiCode, detailCode);
+}
+
 function lookupCode(
   table: Readonly<Record<string, McpStructuredCode>>,
   code: string | undefined,
@@ -284,13 +455,16 @@ function extractDetailCode(details: unknown): string | undefined {
   return undefined;
 }
 
-function pickActionableDetails(details: unknown): McpFailureDetails | undefined {
+function pickDetails(
+  details: unknown,
+  keys: readonly (ActionableDetailKey | BoardDetailKey)[],
+): McpFailureDetails | undefined {
   if (!details || typeof details !== "object" || Array.isArray(details)) {
     return undefined;
   }
   const source = details as Record<string, unknown>;
   const out: McpFailureDetails = {};
-  for (const key of ACTIONABLE_DETAIL_KEYS) {
+  for (const key of keys) {
     if (Object.hasOwn(source, key) && source[key] !== undefined) {
       out[key] = source[key];
     }

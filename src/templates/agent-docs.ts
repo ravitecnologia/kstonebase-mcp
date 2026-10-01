@@ -198,5 +198,30 @@ export function buildToolInventory(binding: AgentDocsBinding): ToolInventory {
   if (binding.workspaceId) {
     writes.push("create_product");
   }
+
+  // Native Board tools (MCP spec "mcp-board-tools") act on a Workspace and
+  // need a whole-Workspace credential, so they are listed for Workspace
+  // bindings only; a Product-only binding never selects a Board.
+  if (binding.workspaceId) {
+    reads.push(...BOARD_READ_TOOLS);
+    writes.push(...BOARD_WRITE_TOOLS);
+  }
   return { reads, writes };
 }
+
+const BOARD_READ_TOOLS = [
+  "read_board",
+  "list_board_items",
+  "read_board_item",
+  "list_board_item_notes",
+];
+
+const BOARD_WRITE_TOOLS = [
+  "create_board_item",
+  "update_board_item",
+  "link_board_specification",
+  "unlink_board_specification",
+  "append_board_item_note",
+  "archive_board_item",
+  "restore_board_item",
+];

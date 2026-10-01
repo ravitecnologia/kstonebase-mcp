@@ -4,6 +4,17 @@ Notable changes to `@ravitecnologia/kstonebase-mcp`. Versions before 2.2.0 are d
 
 ## Unreleased
 
+### Added
+
+- Native Board tools for Software Engineering Workspaces (Kstonebase MCP spec `features/mcp-board-tools.md` §2.1, backed by the API's `/mcp/workspaces/:workspaceId/board…` routes): `read_board`, `list_board_items`, `read_board_item`, `list_board_item_notes`, `create_board_item`, `update_board_item`, `link_board_specification`, `unlink_board_specification`, `append_board_item_note`, `archive_board_item` and `restore_board_item`, on both the stdio and `--http` transports. Names, titles, descriptions, annotations (all with `idempotentHint: true`) and input schemas match the Kstonebase-hosted endpoint; results are the API bodies, unchanged.
+- Board tools target only a Workspace: the passed `workspaceId`, else the `.kstonebase.json` `workspaceId`, else `WORKSPACE_NOT_BOUND` before any request. A bound `productId` is never used, so it cannot narrow or widen Board access; Product-restricted credentials get the API's `WORKSPACE_SCOPE_REQUIRED` with its hint.
+- `create_board_item` and `append_board_item_note` require an `idempotencyKey`, forwarded exactly as given; the package never generates, swaps or retries keys. A Board request that fails in flight reports `INTERNAL_ERROR` telling the agent to re-read and to retry only with the same key.
+- `KstonebaseClient` Board methods (`readBoard`, `listBoardItems`, `readBoardItem`, `listBoardItemNotes`, `createBoardItem`, `updateBoardItem`, `linkBoardSpecification`, `unlinkBoardSpecification` — DELETE with a JSON `{expectedVersion}` body — `appendBoardItemNote`, `archiveBoardItem`, `restoreBoardItem`). PATCH bodies carry only the fields given; explicit `null` clears `assigneeId` / `productId`.
+- Error codes `BOARD_UNAVAILABLE`, `ITEM_NOT_FOUND`, `WORKSPACE_ARCHIVED`, `OWNER_REQUIRED`, `INVALID_PARENT`, `INVALID_ASSIGNEE`, `INVALID_PRODUCT`, `INVALID_CURSOR`, `IDEMPOTENCY_KEY_REUSED`, `ACTIVE_CHILDREN`, `PARENT_ARCHIVED`, `ITEM_ARCHIVED`, `ITEM_NOT_ARCHIVED`, `SPECIFICATION_UNAVAILABLE`, `SPECIFICATION_ARCHIVED` and `LINK_LIMIT_REACHED`. For Board tools the API's `details.code` is the tool code — credential refusals included (`WORKSPACE_SCOPE_REQUIRED`, `TOKEN_SCOPE_MISMATCH`, `TOKEN_SCOPE_INSUFFICIENT`) — and the details `field`, `problem`, `currentVersion`, `activeChildren`, `limit` and `hint` are passed on. `STALE_VERSION` carries `currentVersion` and tells the agent to re-read and reconcile, never to replay. A Board route that answers without any error code (an older deployment) is explained as missing server support. Error codes and details of every other tool are unchanged.
+- `init_workspace` and `init_product` list the Board tools in the generated CLAUDE.md / AGENTS.md for Workspace bindings. README documents the native Board workflow; the ChatGPT app manifest declares the new tools.
+
+**Requires** a Kstonebase deployment whose API serves the native Board and whose Website proxies `/api/mcp/workspaces/:workspaceId/board…`.
+
 ### Changed
 
 - `request_review` no longer describes an open-question gate: Kstonebase accepts review requests, and Owners approve versions, while open questions remain (Kstonebase Business PDR-0007, changed 2026-09-26). The tool still maps `OPEN_QUESTIONS_PRESENT` from older servers.

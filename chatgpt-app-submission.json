@@ -307,6 +307,149 @@
         "open_world_justification": "Only writes private Kstonebase change history and does not publish externally.",
         "destructive_justification": "Appends a new immutable change entry; the specification's own content is never modified and no existing entry is deleted or overwritten."
       }
+    },
+    "read_board": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only returns the Workspace Board summary (role, capabilities, states, WIP limit and counts); reading never creates records.",
+        "open_world_justification": "Only reads the private Kstonebase Workspace Board and does not publish or send data outward.",
+        "destructive_justification": "Does not create, change, archive or delete any work item or specification."
+      }
+    },
+    "list_board_items": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only lists work items of the Workspace Board with filters and pagination; it changes nothing.",
+        "open_world_justification": "Only reads the private Kstonebase Workspace Board and does not publish or send data outward.",
+        "destructive_justification": "Does not create, change, archive or delete any work item or specification."
+      }
+    },
+    "read_board_item": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only returns one work item with its fields, linked specification references, newest notes and version; it changes nothing.",
+        "open_world_justification": "Only reads the private Kstonebase Workspace Board and does not publish or send data outward.",
+        "destructive_justification": "Does not create, change, archive or delete any work item or specification."
+      }
+    },
+    "list_board_item_notes": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only lists the notes and evidence recorded on one work item; it changes nothing.",
+        "open_world_justification": "Only reads the private Kstonebase Workspace Board and does not publish or send data outward.",
+        "destructive_justification": "Does not create, change or delete any note, work item or specification."
+      }
+    },
+    "create_board_item": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Creates a new Epic, Feature or PBI on the Workspace Board, which writes Kstonebase data.",
+        "open_world_justification": "Only changes private Kstonebase Workspace Board data and does not publish to public internet endpoints.",
+        "destructive_justification": "Only adds a new work item; it never overwrites or deletes existing items or specifications, and a retry with the same idempotency key creates nothing new."
+      }
+    },
+    "update_board_item": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Changes the fields, state or parent of an existing work item.",
+        "open_world_justification": "Only changes private Kstonebase Workspace Board data and does not publish to public internet endpoints.",
+        "destructive_justification": "Overwrites existing work-item fields such as the title, description, Implementation Prompt or state; it is guarded by the expected version and never changes or approves specifications."
+      }
+    },
+    "link_board_specification": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Adds a link between a work item and an existing specification, which writes Kstonebase data.",
+        "open_world_justification": "Only changes private Kstonebase Workspace Board data and does not publish to public internet endpoints.",
+        "destructive_justification": "Only adds a link; the specification itself is not modified, and linking an already linked specification is a no-op."
+      }
+    },
+    "unlink_board_specification": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Removes the link between a work item and a specification, which writes Kstonebase data.",
+        "open_world_justification": "Only changes private Kstonebase Workspace Board data and does not publish to public internet endpoints.",
+        "destructive_justification": "Removes an existing link from the work item; the specification itself is untouched, and unlinking an absent link is a no-op."
+      }
+    },
+    "append_board_item_note": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Appends a delivery note or validation evidence to a work item, which writes Kstonebase data.",
+        "open_world_justification": "Only changes private Kstonebase Workspace Board data and does not publish to public internet endpoints.",
+        "destructive_justification": "Only adds a note without changing the work item or any specification, and a retry with the same idempotency key adds nothing new."
+      }
+    },
+    "archive_board_item": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Archives a work item on the Workspace Board (Workspace Owner only).",
+        "open_world_justification": "Only changes private Kstonebase Workspace Board data and does not publish to public internet endpoints.",
+        "destructive_justification": "Hides the work item from the active Board until it is restored; it is reversible with restore_board_item and never deletes the item or changes specifications."
+      }
+    },
+    "restore_board_item": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Restores an archived work item to the Workspace Board (Workspace Owner only).",
+        "open_world_justification": "Only changes private Kstonebase Workspace Board data and does not publish to public internet endpoints.",
+        "destructive_justification": "Only brings an archived work item back; it does not overwrite or delete any content or specification."
+      }
     }
   },
   "test_cases": [
