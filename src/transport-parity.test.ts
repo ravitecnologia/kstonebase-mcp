@@ -88,6 +88,25 @@ const BOARD_ITEM_FIXTURE = {
   notesTotal: 0,
 };
 
+// Import report fixtures (MCP › mcp-board-tools.md §2.2; API import contract §8.8).
+const BOARD_IMPORT_FIXTURE = {
+  id: "run_1",
+  workspaceId: "ws_1",
+  provider: "azure_devops",
+  providerLabel: "Azure DevOps",
+  phase: "preview",
+  status: "needs_mapping",
+  plan: { import: 0, already_imported: 0, unsupported: 0, excluded: 0, blocked: 1 },
+  items: [{ sourceId: 42, plan: "blocked", planCode: "state-unmapped", outcome: null, nativeItem: null }],
+  itemsTotal: 1,
+  limit: 10,
+  nextCursor: null,
+};
+
+const BOARD_OWNER_REQUIRED_ERROR = {
+  error: { code: "FORBIDDEN", message: "Only the Workspace Owner can do this.", details: { code: "OWNER_REQUIRED" } },
+};
+
 const BOARD_STALE_ERROR = {
   error: {
     code: "CONFLICT",
@@ -122,6 +141,8 @@ function route(method: string, path: string): { status: number; json: unknown } 
   if (method === "POST" && path === `${board}/items`) return { status: 201, json: { item: BOARD_ITEM_FIXTURE, replayed: false } };
   if (method === "PATCH" && path === `${board}/items/bi_1`) return { status: 409, json: BOARD_STALE_ERROR };
   if (method === "DELETE" && path === `${board}/items/bi_1/specifications/s_1`) return { status: 200, json: BOARD_ITEM_FIXTURE };
+  if (method === "GET" && path === `${board}/imports/run_1?limit=10&plan=blocked`) return { status: 200, json: BOARD_IMPORT_FIXTURE };
+  if (method === "GET" && path === `${board}/imports`) return { status: 403, json: BOARD_OWNER_REQUIRED_ERROR };
   return { status: 404, json: { error: { code: "NOT_FOUND", message: "Not found." } } };
 }
 
@@ -207,6 +228,8 @@ const BOARD_TOOLS = [
   "append_board_item_note",
   "archive_board_item",
   "restore_board_item",
+  "list_board_imports",
+  "read_board_import",
 ];
 
 /** The scripted session every transport runs. */
@@ -239,6 +262,8 @@ async function runSession(client: Client): Promise<SessionRecord> {
     ["update_board_item", { workspaceId: "ws_1", itemId: "bi_1", expectedVersion: 1, assigneeId: null, state: "doing" }],
     ["unlink_board_specification", { workspaceId: "ws_1", itemId: "bi_1", specificationId: "s_1", expectedVersion: 2 }],
     ["read_board", {}],
+    ["read_board_import", { workspaceId: "ws_1", importId: "run_1", plan: "blocked", limit: 10 }],
+    ["list_board_imports", { workspaceId: "ws_1" }],
   ];
   for (const [name, args] of calls) {
     const res = await client.callTool({ name, arguments: args });
@@ -338,6 +363,9 @@ describe("stdio and HTTP transports", () => {
       expect(memory.results[8]).toMatchObject({ isError: false, structuredContent: BOARD_ITEM_FIXTURE });
       // No Workspace binding: read_board fails locally on every transport.
       expect(memory.results[9]).toMatchObject({ isError: true, structuredContent: { code: "WORKSPACE_NOT_BOUND" } });
+      // Import report reads: RunDetail unchanged; a Member's report read is OWNER_REQUIRED.
+      expect(memory.results[10]).toMatchObject({ isError: false, structuredContent: BOARD_IMPORT_FIXTURE });
+      expect(memory.results[11]).toMatchObject({ isError: true, structuredContent: { code: "OWNER_REQUIRED" } });
 
       // Same requests at the API: one per call, no retries, Bearer only.
       expect(http.requests).toEqual(memory.requests);
@@ -419,6 +447,22 @@ describe("stdio and HTTP transports", () => {
           cookie: undefined,
           contentType: "application/json",
           body: { expectedVersion: 2 },
+        },
+        {
+          method: "GET",
+          path: "/api/mcp/workspaces/ws_1/board/imports/run_1?limit=10&plan=blocked",
+          authorization: `Bearer ${TOKEN}`,
+          cookie: undefined,
+          contentType: undefined,
+          body: undefined,
+        },
+        {
+          method: "GET",
+          path: "/api/mcp/workspaces/ws_1/board/imports",
+          authorization: `Bearer ${TOKEN}`,
+          cookie: undefined,
+          contentType: undefined,
+          body: undefined,
         },
       ]);
     },

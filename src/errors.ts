@@ -47,7 +47,10 @@ export type McpStructuredCode =
   | "ITEM_NOT_ARCHIVED"
   | "SPECIFICATION_UNAVAILABLE"
   | "SPECIFICATION_ARCHIVED"
-  | "LINK_LIMIT_REACHED";
+  | "LINK_LIMIT_REACHED"
+  // Board import report code (API › features/azure-devops-board-import.md
+  // §8.3; the MCP surface only exposes the report reads).
+  | "IMPORT_NOT_FOUND";
 
 export interface ApiErrorBody {
   error?: {
@@ -98,9 +101,12 @@ export type McpFailureDetails = Partial<
  * How an API error is mapped. "board" is used by the native Board tools only:
  * there the API's `details.code` is always the tool error code, credential
  * codes included (MCP › mcp-board-tools.md §2.1), and Board remediations and
- * details apply. "default" keeps the existing vocabulary for every other tool.
+ * details apply. "board-import" is the same mapping for the Board import
+ * report reads (list_board_imports, read_board_import; spec §2.2), with
+ * remediations worded for Owner-only reports. "default" keeps the existing
+ * vocabulary for every other tool.
  */
-export type ErrorMappingMode = "default" | "board";
+export type ErrorMappingMode = "default" | "board" | "board-import";
 
 export interface McpFailure {
   code: McpStructuredCode;
@@ -219,6 +225,8 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
     "The specification is archived, so it cannot be linked. Link an active specification, or ask a human to restore it first.",
   LINK_LIMIT_REACHED:
     "The work item already links the maximum number of specifications (details.limit). Unlink one with unlink_board_specification before linking another.",
+  IMPORT_NOT_FOUND:
+    "No such import on this Workspace's Board. Use an id returned by list_board_imports for this same Workspace; never guess ids. Tools cannot start an import: a person connects Azure DevOps in Workspace Settings → General → Azure DevOps, then previews and confirms it with Import from Azure DevOps on the Board.",
 };
 
 // Board-specific wording for shared codes (MCP › mcp-board-tools.md §2.1,
@@ -303,9 +311,34 @@ const ENVELOPE_FIRST_CODES: Readonly<Record<string, McpStructuredCode>> = {
 const BOARD_ROUTE_UNSUPPORTED =
   "The Kstonebase server answered without a Board error code, so this deployment probably does not serve the native Board tools yet. Ask an administrator to update Kstonebase; the other tools keep working. Do not fall back to another board silently.";
 
-/** The remediation a Board tool reports for `code`. */
-export function boardRemediation(code: McpStructuredCode): string {
-  return BOARD_REMEDIATIONS[code] ?? REMEDIATIONS[code];
+// The same situation for the import report reads, whose routes are newer
+// than the native Board ones (MCP › mcp-board-tools.md §2.2).
+const BOARD_IMPORT_ROUTE_UNSUPPORTED =
+  "The Kstonebase server answered without a Board error code, so this deployment probably does not serve the Board import report tools yet. Ask an administrator to update Kstonebase; the other Board tools keep working, and imported cards can still be read with list_board_items and read_board_item.";
+
+// Import-report wording for shared codes (MCP › mcp-board-tools.md §2.2 and
+// API › features/azure-devops-board-import.md §8.3). Reports are
+// Workspace-Owner-only, read-only and never contain a credential; connecting
+// a source and confirming an import stay human-only in the Website.
+const BOARD_IMPORT_REMEDIATIONS: Partial<Record<McpStructuredCode, string>> = {
+  OWNER_REQUIRED:
+    "Azure DevOps import reports are visible to the Workspace Owner only. As a Member you can still read and work on every card, imported ones included, with list_board_items and read_board_item (an imported card's `origin` names its Azure DevOps source). Ask the Workspace Owner to review the report; retrying with the same credential will not help.",
+  INVALID_CURSOR:
+    "The cursor is not valid for this list. Start again from the first page without a cursor and pass nextCursor back exactly as returned, with the same arguments (for read_board_import: the same importId, plan and outcome).",
+  VALIDATION_ERROR:
+    "An argument failed validation (details.field and details.problem say which and why). limit is 1–100; plan is one of import, already_imported, unsupported, excluded, blocked; outcome is one of pending, imported, already_imported, skipped, blocked, failed. Fix that argument instead of retrying it unchanged.",
+  INTERNAL_ERROR:
+    "The Kstonebase API hit an unexpected error. Import report reads change nothing, so retry the read once; if it persists, contact support.",
+};
+
+/** The remediation a Board tool (or, in "board-import" mode, an import report tool) reports for `code`. */
+export function boardRemediation(
+  code: McpStructuredCode,
+  mode: ErrorMappingMode = "board",
+): string {
+  const forImport =
+    mode === "board-import" ? BOARD_IMPORT_REMEDIATIONS[code] : undefined;
+  return forImport ?? BOARD_REMEDIATIONS[code] ?? REMEDIATIONS[code];
 }
 
 // Board refusals carry their specific code in `details.code` under a generic
@@ -333,6 +366,7 @@ const BOARD_DETAIL_CODES: Readonly<Record<string, McpStructuredCode>> = {
   SPECIFICATION_UNAVAILABLE: "SPECIFICATION_UNAVAILABLE",
   SPECIFICATION_ARCHIVED: "SPECIFICATION_ARCHIVED",
   LINK_LIMIT_REACHED: "LINK_LIMIT_REACHED",
+  IMPORT_NOT_FOUND: "IMPORT_NOT_FOUND",
   WORKSPACE_SCOPE_REQUIRED: "WORKSPACE_SCOPE_REQUIRED",
   TOKEN_SCOPE_MISMATCH: "TOKEN_SCOPE_MISMATCH",
   TOKEN_SCOPE_INSUFFICIENT: "TOKEN_SCOPE_INSUFFICIENT",
@@ -355,6 +389,8 @@ const BOARD_DETAIL_CODES: Readonly<Record<string, McpStructuredCode>> = {
  * In "board" mode (native Board tools only) every known `details.code` wins,
  * the Board remediations apply and the Board detail allowlist (field,
  * problem, currentVersion, activeChildren, limit, hint) is passed on.
+ * "board-import" (the import report reads) maps the same way with the
+ * import-report remediations.
  */
 export function mapApiError(
   status: number,
@@ -366,17 +402,21 @@ export function mapApiError(
     body?.error?.message ?? `Request failed with status ${status}.`;
   const rawDetails = body?.error?.details;
   const detailCode = extractDetailCode(rawDetails);
-  if (mode === "board") {
+  if (mode === "board" || mode === "board-import") {
     const { code } = pickBoardCode(status, apiCode, detailCode);
     const details = pickDetails(rawDetails, BOARD_DETAIL_KEYS);
     const unsupported =
       apiCode === undefined &&
       detailCode === undefined &&
       (status === 404 || status === 405 || status === 501);
+    const routeUnsupported =
+      mode === "board-import"
+        ? BOARD_IMPORT_ROUTE_UNSUPPORTED
+        : BOARD_ROUTE_UNSUPPORTED;
     return new McpToolError(
       code,
       apiMessage,
-      unsupported ? BOARD_ROUTE_UNSUPPORTED : boardRemediation(code),
+      unsupported ? routeUnsupported : boardRemediation(code, mode),
       details,
     );
   }

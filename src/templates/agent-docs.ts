@@ -214,6 +214,10 @@ const BOARD_READ_TOOLS = [
   "list_board_items",
   "read_board_item",
   "list_board_item_notes",
+  // Import report reads (MCP spec "mcp-board-tools" §2.2): Workspace Owner
+  // only; Members get OWNER_REQUIRED.
+  "list_board_imports",
+  "read_board_import",
 ];
 
 const BOARD_WRITE_TOOLS = [

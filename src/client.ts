@@ -208,6 +208,32 @@ export interface AppendBoardItemNoteInput {
   idempotencyKey: string;
 }
 
+// Board import reports (API › features/azure-devops-board-import.md §8.8;
+// MCP › mcp-board-tools.md §2.2). Read-only and Workspace-Owner-only; the
+// results (`RunPage`, `RunDetail`) are passed through unchanged.
+
+export type BoardImportPlan =
+  | "import"
+  | "already_imported"
+  | "unsupported"
+  | "excluded"
+  | "blocked";
+
+export type BoardImportOutcome =
+  | "pending"
+  | "imported"
+  | "already_imported"
+  | "skipped"
+  | "blocked"
+  | "failed";
+
+export interface ReadBoardImportQuery extends PageQuery {
+  /** Only the staged items with this plan decision. */
+  plan?: BoardImportPlan;
+  /** Only the staged items with this execution outcome. */
+  outcome?: BoardImportOutcome;
+}
+
 export interface ApiResponse<T> {
   body: T;
   etag: string | null;
@@ -653,6 +679,43 @@ export class KstonebaseClient {
     );
   }
 
+  // ────────────────────────────────────────────────────────────────────
+  // Board import reports (`…/board/imports`). Report reads only: no method
+  // here connects a source, runs discovery, changes a mapping, confirms,
+  // cancels or retries an import — those stay human-only in the Website.
+  // Errors map in "board-import" mode (Board codes, report remediations).
+  // ────────────────────────────────────────────────────────────────────
+
+  /** GET …/board/imports → `RunPage` (Workspace Owner only). */
+  listBoardImports(
+    workspaceId: string,
+    query: PageQuery = {},
+  ): Promise<ApiResponse<unknown>> {
+    const qs = queryString({ limit: query.limit, cursor: query.cursor });
+    return this.getJson(
+      `${boardPath(workspaceId)}/imports${qs}`,
+      "board-import",
+    );
+  }
+
+  /** GET …/board/imports/:importId → `RunDetail` (Workspace Owner only). */
+  readBoardImport(
+    workspaceId: string,
+    importId: string,
+    query: ReadBoardImportQuery = {},
+  ): Promise<ApiResponse<unknown>> {
+    const qs = queryString({
+      limit: query.limit,
+      cursor: query.cursor,
+      plan: query.plan,
+      outcome: query.outcome,
+    });
+    return this.getJson(
+      `${boardPath(workspaceId)}/imports/${boardSegment("importId", importId)}${qs}`,
+      "board-import",
+    );
+  }
+
   /** Convenience for endpoints that never send If-None-Match — narrows the
    *  union so callers don't have to discriminate on `notModified`. The body
    *  type is the documented API shape; it is not validated at runtime. */
@@ -913,22 +976,23 @@ export class KstonebaseClient {
   /**
    * One HTTP attempt, never retried. A request that fails in flight on a
    * Board call becomes INTERNAL_ERROR with the Board remediation (re-read
-   * first; retry a create or note only with the same idempotencyKey). Other
-   * tools keep their existing behaviour (the error propagates as is).
+   * first; retry a create or note only with the same idempotencyKey; import
+   * report reads: retry the read once). Other tools keep their existing
+   * behaviour (the error propagates as is).
    */
   private async fetchOnce(
     url: string,
     init: RequestInit,
     mode: ErrorMappingMode,
   ): Promise<Response> {
-    if (mode !== "board") return this.fetcher(url, init);
+    if (mode === "default") return this.fetcher(url, init);
     try {
       return await this.fetcher(url, init);
     } catch (err) {
       throw new McpToolError(
         "INTERNAL_ERROR",
         `The request did not complete: ${(err as Error)?.message ?? String(err)}`,
-        boardRemediation("INTERNAL_ERROR"),
+        boardRemediation("INTERNAL_ERROR", mode),
       );
     }
   }
@@ -980,7 +1044,7 @@ function boardSegment(name: string, id: string): string {
     throw new McpToolError(
       "VALIDATION_ERROR",
       `${name} must be a non-empty id other than "." or "..".`,
-      "Pass the id exactly as returned by list_workspaces, list_board_items, read_board_item or the specification tools.",
+      "Pass the id exactly as returned by list_workspaces, list_board_items, read_board_item, list_board_imports or the specification tools.",
     );
   }
   return encodeURIComponent(id);

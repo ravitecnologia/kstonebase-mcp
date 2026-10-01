@@ -57,10 +57,10 @@ const DELETE_OPEN_QUESTION_DESCRIPTION =
   "Permanently delete an open question or assumption from a Draft Specification. Removes the record and any marker still in the document; prose written by an earlier resolution or dismissal stays. This cannot be undone: to set an item aside, use update_open_question with status DISMISSED instead. Requires version and expectedUpdatedAt from your latest read.";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Native Board tools (Kstonebase MCP spec "mcp-board-tools" §2.1, the frozen
-// tool contract shared with the Kstonebase-hosted endpoint and the Desktop
-// bridge). Names, titles, descriptions, annotations and input schemas must
-// stay identical on every transport; change them only together with the
+// Native Board tools (Kstonebase MCP spec "mcp-board-tools" §2.1 and §2.2,
+// the frozen tool contract shared with the Kstonebase-hosted endpoint and the
+// Desktop bridge). Names, titles, descriptions, annotations and input schemas
+// must stay identical on every transport; change them only together with the
 // contract.
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -159,6 +159,20 @@ const BOARD_TOOL_TEXT = {
       "Restore an archived work item (Workspace Owner only). Its parent must be active.",
     ),
   },
+  // Import report reads (spec "mcp-board-tools" §2.2). Report-only: no tool
+  // connects a source, changes a mapping or confirms an import.
+  list_board_imports: {
+    title: "List Board imports",
+    description: boardDescription(
+      "List the Azure DevOps import previews and runs of a Software Engineering Workspace Board, newest first, with their status and honest counts (Workspace Owner only). Reports never contain credentials. Connecting a source and confirming an import are done by a person in Workspace Settings and on the Board, never through tools.",
+    ),
+  },
+  read_board_import: {
+    title: "Read a Board import",
+    description: boardDescription(
+      "Read one Azure DevOps import preview or run (Workspace Owner only): source scope, mappings, warnings, omissions and a page of items with their plan, outcome and native card. Use it to explain mapping problems or results; to change the mapping or confirm, direct the person to the import screen on the Board.",
+    ),
+  },
 } as const;
 
 // Shared zod pieces of the Board input schemas (contract §2.1 bounds).
@@ -175,6 +189,17 @@ const boardLimit = () => z.number().int().min(1).max(100);
 const boardCursor = () => z.string().max(512);
 const boardIdempotencyKey = () =>
   z.string().regex(/^[A-Za-z0-9._:-]{8,128}$/);
+const boardImportPlan = () =>
+  z.enum(["import", "already_imported", "unsupported", "excluded", "blocked"]);
+const boardImportOutcome = () =>
+  z.enum([
+    "pending",
+    "imported",
+    "already_imported",
+    "skipped",
+    "blocked",
+    "failed",
+  ]);
 
 /**
  * Board tools act on a Workspace only: the explicit `workspaceId` wins, else
@@ -884,6 +909,70 @@ export function registerReadTools(
           const res = await client.listBoardItemNotes(wsId, args.itemId, {
             limit: args.limit,
             cursor: args.cursor,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
+
+  // ────────────────────────────────────────────────────────────────────
+  // Board import report reads (spec "mcp-board-tools" §2.2; API ›
+  // features/azure-devops-board-import.md §8.8). Workspace-Owner-only,
+  // read-only, results unchanged. Imported cards themselves are ordinary
+  // Board items whose `origin` comes back through list/read_board_item(s).
+  // ────────────────────────────────────────────────────────────────────
+
+  server.registerTool(
+    "list_board_imports",
+    {
+      ...BOARD_TOOL_TEXT.list_board_imports,
+      annotations: BOARD_READ_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        limit: boardLimit().optional(),
+        cursor: boardCursor().optional(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "list_board_imports",
+        { workspaceId: args.workspaceId },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.listBoardImports(wsId, {
+            limit: args.limit,
+            cursor: args.cursor,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "read_board_import",
+    {
+      ...BOARD_TOOL_TEXT.read_board_import,
+      annotations: BOARD_READ_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        importId: z.string(),
+        limit: boardLimit().optional(),
+        cursor: boardCursor().optional(),
+        plan: boardImportPlan().optional(),
+        outcome: boardImportOutcome().optional(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "read_board_import",
+        { workspaceId: args.workspaceId, importId: args.importId },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.readBoardImport(wsId, args.importId, {
+            limit: args.limit,
+            cursor: args.cursor,
+            plan: args.plan,
+            outcome: args.outcome,
           });
           return ok(res.body);
         },

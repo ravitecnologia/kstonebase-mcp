@@ -450,6 +450,32 @@
         "open_world_justification": "Only changes private Kstonebase Workspace Board data and does not publish to public internet endpoints.",
         "destructive_justification": "Only brings an archived work item back; it does not overwrite or delete any content or specification."
       }
+    },
+    "list_board_imports": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only returns the Workspace Board's Azure DevOps import previews and runs with their status and counts (Workspace Owner only); it never contains credentials and changes nothing.",
+        "open_world_justification": "Only reads private Kstonebase import reports; it never contacts Azure DevOps or any other external service and does not publish data outward.",
+        "destructive_justification": "Does not connect a source, change a mapping, confirm, cancel or retry an import, and does not create, change or delete any work item or specification."
+      }
+    },
+    "read_board_import": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only returns one Azure DevOps import preview or run (source scope, mappings, warnings, omissions and a page of items with their plan and outcome; Workspace Owner only); it never contains credentials and changes nothing.",
+        "open_world_justification": "Only reads a private Kstonebase import report; it never contacts Azure DevOps or any other external service and does not publish data outward.",
+        "destructive_justification": "Does not change the mapping, confirm, cancel or retry the import, and does not create, change or delete any work item or specification."
+      }
     }
   },
   "test_cases": [

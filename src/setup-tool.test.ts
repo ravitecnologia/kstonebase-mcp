@@ -609,7 +609,14 @@ describe("agent-docs template", () => {
   });
 
   it("lists the native Board tools for Workspace bindings only", () => {
-    const boardReads = ["read_board", "list_board_items", "read_board_item", "list_board_item_notes"];
+    const boardReads = [
+      "read_board",
+      "list_board_items",
+      "read_board_item",
+      "list_board_item_notes",
+      "list_board_imports",
+      "read_board_import",
+    ];
     const boardWrites = [
       "create_board_item",
       "update_board_item",
@@ -635,6 +642,9 @@ describe("agent-docs template", () => {
       expect(body.indexOf("- `read_board`")).toBeGreaterThan(-1);
       expect(body.indexOf("- `read_board`")).toBeLessThan(writesAt);
       expect(body.indexOf("- `create_board_item`")).toBeGreaterThan(writesAt);
+      // Import report reads are reads; no import setup tool exists.
+      expect(body.indexOf("- `list_board_imports`")).toBeGreaterThan(-1);
+      expect(body.indexOf("- `read_board_import`")).toBeLessThan(writesAt);
       expect(body).not.toMatch(/azure/i);
     }
     const productOnly: AgentDocsBinding[] = [

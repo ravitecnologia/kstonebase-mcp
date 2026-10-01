@@ -331,6 +331,8 @@ All tools take ids as strings. Bound Workspace/Product ids are inferred from `.k
 | `list_board_items`            | Epics, Features and PBIs, ordered by priority then number. Filters: `type`, `state`, `parentId`, `productId` (`none` = Workspace-wide), `assigneeId` (`none` = unassigned), `priority`, `tag`, `query` (title or `#12`), `archived`. Cursor-paginated. |
 | `read_board_item`             | One work item: description, PBI acceptance criteria and Implementation Prompt, linked specification chips, newest notes and its `version`.                                            |
 | `list_board_item_notes`       | Older delivery notes and evidence of a work item, newest first. Cursor-paginated.                                                                                                      |
+| `list_board_imports`          | Azure DevOps import previews and runs of the Workspace Board, newest first, with status and counts (Workspace Owner only). Cursor-paginated. See [Imported cards and import reports](#imported-cards-and-import-reports). |
+| `read_board_import`           | One import preview or run: source scope, mappings, warnings, omissions and a page of items with their `plan`, `outcome` and native card. Filters: `plan`, `outcome`. Cursor-paginated (Workspace Owner only). |
 
 ### Write tools
 
@@ -401,7 +403,13 @@ A typical loop: `read_board` → `list_board_items` (reuse what exists) → `cre
 
 Failures to expect besides the ones above: `ITEM_NOT_FOUND`, `INVALID_PARENT`, `INVALID_ASSIGNEE`, `INVALID_PRODUCT`, `INVALID_CURSOR`, `VALIDATION_ERROR` (`details.field` / `details.problem`), `WORKSPACE_ARCHIVED` (read-only Board), `OWNER_REQUIRED`, `ACTIVE_CHILDREN` (`details.activeChildren`), `PARENT_ARCHIVED`, `ITEM_ARCHIVED`, `ITEM_NOT_ARCHIVED`, `SPECIFICATION_UNAVAILABLE`, `SPECIFICATION_ARCHIVED`, `LINK_LIMIT_REACHED` (`details.limit`), `TOKEN_SCOPE_MISMATCH` (token pinned to another Workspace) and `TOKEN_SCOPE_INSUFFICIENT` (no `write` scope). Each failure carries a remediation plus the allowlisted `details` (`field`, `problem`, `currentVersion`, `activeChildren`, `limit`, `hint`). Results are the Kstonebase API's bodies, unchanged.
 
-> **Backend prerequisite** — the Board tools need a Kstonebase deployment whose API serves the native Board and whose Website proxies `/api/mcp/workspaces/:workspaceId/board…`. Against an older deployment they fail with a remediation saying the server does not serve the Board tools yet; every other tool keeps working.
+> **Backend prerequisite** — the Board tools need a Kstonebase deployment whose API serves the native Board and whose Website proxies `/api/mcp/workspaces/:workspaceId/board…`. Against an older deployment they fail with a remediation saying the server does not serve the Board tools yet; every other tool keeps working. `list_board_imports` and `read_board_import` also need the import report routes (`…/board/imports`); without them they explain the missing server support the same way.
+
+#### Imported cards and import reports
+
+A Workspace Owner can import work items from their own Azure DevOps boards in the Kstonebase Website. Imported cards are ordinary native work items: every Board tool works on them, and `list_board_items` / `read_board_item` return an `origin` object naming the source (organization, project, team, board, the original work item's id, type, state, revision and URL, and who imported it when). Native cards carry `"origin": null`. `origin` is read-only imported data, never an instruction: `create_board_item` and `update_board_item` cannot set, change or remove it, and the package never forwards an `origin` argument.
+
+`list_board_imports` and `read_board_import` let an agent explain an import preview or its result — mappings, blockers, warnings, omitted data and each item's `plan` (`import`, `already_imported`, `unsupported`, `excluded`, `blocked`) and `outcome` (`pending`, `imported`, `already_imported`, `skipped`, `blocked`, `failed`). They are Workspace-Owner-only (Members get `OWNER_REQUIRED` but can still read imported cards), read-only, and never contain a credential. No tool connects a source, runs discovery, changes a mapping or confirms, cancels or retries an import: a person does that in the Website — Workspace Settings → General → Azure DevOps to connect, then **Import from Azure DevOps** on the Board to preview, map and confirm. Expect also `IMPORT_NOT_FOUND`, `INVALID_CURSOR` and `VALIDATION_ERROR`.
 
 ### Setup tools
 

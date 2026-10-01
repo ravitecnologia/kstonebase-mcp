@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { McpToolError, mapApiError, type ApiErrorBody } from "./errors.js";
+import { McpToolError, boardRemediation, mapApiError, type ApiErrorBody } from "./errors.js";
 
 describe("mapApiError — code priority", () => {
   it("maps VALIDATION_ERROR (422) by status when no body code is set", () => {
@@ -517,6 +517,64 @@ describe("mapApiError — board mode (MCP › mcp-board-tools.md §2.1)", () => 
     expect(mapApiError(500, envelope("INTERNAL_ERROR", "INTERNAL_ERROR"), "board").remediation).toContain("same idempotencyKey");
     for (const code of ["toString", "__proto__"]) {
       expect(mapApiError(404, envelope(code, "m", { code }), "board").code).toBe("NOT_FOUND");
+    }
+  });
+});
+
+describe("mapApiError — board-import mode (MCP › mcp-board-tools.md §2.2)", () => {
+  it("maps IMPORT_NOT_FOUND from details.code in both Board modes, never in the default mode", () => {
+    for (const mode of ["board", "board-import"] as const) {
+      const err = mapApiError(404, envelope("NOT_FOUND", "m", { code: "IMPORT_NOT_FOUND" }), mode);
+      expect(err.code).toBe("IMPORT_NOT_FOUND");
+      expect(err.remediation).toContain("list_board_imports");
+      expect(err.remediation).toContain("Workspace Settings → General → Azure DevOps");
+      expect(err.remediation).toContain("Import from Azure DevOps");
+    }
+    expect(mapApiError(404, envelope("NOT_FOUND", "m", { code: "IMPORT_NOT_FOUND" })).code).toBe("NOT_FOUND");
+  });
+
+  it("words OWNER_REQUIRED, INVALID_CURSOR, VALIDATION_ERROR and INTERNAL_ERROR for the report reads only", () => {
+    const owner = (mode: "board" | "board-import") =>
+      mapApiError(403, envelope("FORBIDDEN", "m", { code: "OWNER_REQUIRED" }), mode).remediation;
+    expect(owner("board-import")).toContain("import reports are visible to the Workspace Owner only");
+    expect(owner("board-import")).toContain("list_board_items and read_board_item");
+    expect(owner("board")).toContain("archive or restore");
+    expect(owner("board")).not.toContain("import");
+
+    const cursor = mapApiError(400, envelope("BAD_REQUEST", "m", { code: "INVALID_CURSOR", field: "cursor" }), "board-import");
+    expect(cursor.code).toBe("INVALID_CURSOR");
+    expect(cursor.details).toEqual({ field: "cursor" });
+    expect(cursor.remediation).toContain("plan and outcome");
+
+    const invalid = mapApiError(
+      400,
+      envelope("BAD_REQUEST", "m", { code: "VALIDATION_ERROR", field: "outcome", problem: "invalid-value" }),
+      "board-import",
+    );
+    expect(invalid.details).toEqual({ field: "outcome", problem: "invalid-value" });
+    expect(invalid.remediation).toContain("pending, imported, already_imported, skipped, blocked, failed");
+
+    const internal = mapApiError(500, envelope("INTERNAL_ERROR", "INTERNAL_ERROR"), "board-import");
+    expect(internal.code).toBe("INTERNAL_ERROR");
+    expect(internal.remediation).toContain("retry the read once");
+    expect(internal.remediation).not.toContain("idempotencyKey");
+  });
+
+  it("keeps every other Board remediation and the Board detail allowlist", () => {
+    const scope = mapApiError(403, envelope("FORBIDDEN", "W", { code: "WORKSPACE_SCOPE_REQUIRED", hint: "h", token: "x" }), "board-import");
+    expect(scope.code).toBe("WORKSPACE_SCOPE_REQUIRED");
+    expect(scope.remediation).toContain("whole-Workspace credential");
+    expect(scope.details).toEqual({ hint: "h" });
+    const missing = mapApiError(404, envelope("NOT_FOUND", "m", { code: "NOT_FOUND" }), "board-import");
+    expect(missing.remediation).toContain("Owner or a current Member");
+    expect(boardRemediation("BOARD_UNAVAILABLE", "board-import")).toBe(boardRemediation("BOARD_UNAVAILABLE"));
+  });
+
+  it("explains a code-less 404/405/501 as missing import report routes", () => {
+    for (const status of [404, 405, 501]) {
+      const err = mapApiError(status, { error: { message: "API returned a non-JSON payload." } }, "board-import");
+      expect(err.remediation).toContain("does not serve the Board import report tools");
+      expect(err.remediation).toContain("list_board_items and read_board_item");
     }
   });
 });
