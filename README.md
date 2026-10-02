@@ -296,6 +296,8 @@ Either field is optional:
 
 You can also use environment variables: `KSTONEBASE_WORKSPACE_ID`, `KSTONEBASE_PRODUCT_ID`. The file wins over env vars when both are present.
 
+The [Native Board](#native-board) tools use only `workspaceId` (passed or bound); a bound `productId` never selects or widens a Board.
+
 ## ✅ Verify the install
 
 ```bash
@@ -325,6 +327,12 @@ All tools take ids as strings. Bound Workspace/Product ids are inferred from `.k
 | `read_specification_change`   | Full Markdown of one change entry. Pair with `list_specification_changes`.                                                                                                             |
 | `list_open_questions`         | Questions and assumptions attached to a spec. Resolved/dismissed items are excluded unless `includeResolved=true`. Newer deployments also return the spec's current `version`.        |
 | `read_open_question`          | One question or assumption plus the spec's current `version`. Its `updatedAt` is the `expectedUpdatedAt` that updates and deletes need. See [Open questions and assumptions](#open-questions-and-assumptions). |
+| `read_board`                  | The native Board of a Software Engineering Workspace: your role, capabilities, states, the advisory Doing WIP limit and counts per type. See [Native Board](#native-board).           |
+| `list_board_items`            | Epics, Features and PBIs, ordered by priority then number. Filters: `type`, `state`, `parentId`, `productId` (`none` = Workspace-wide), `assigneeId` (`none` = unassigned), `priority`, `tag`, `query` (title or `#12`), `archived`. Cursor-paginated. |
+| `read_board_item`             | One work item: description, PBI acceptance criteria and Implementation Prompt, linked specification chips, newest notes and its `version`.                                            |
+| `list_board_item_notes`       | Older delivery notes and evidence of a work item, newest first. Cursor-paginated.                                                                                                      |
+| `list_board_imports`          | Azure DevOps import previews and runs of the Workspace Board, newest first, with status and counts (Workspace Owner only). Cursor-paginated. See [Imported cards and import reports](#imported-cards-and-import-reports). |
+| `read_board_import`           | One import preview or run: source scope, mappings, warnings, omissions and a page of items with their `plan`, `outcome` and native card. Filters: `plan`, `outcome`. Cursor-paginated (Workspace Owner only). |
 
 ### Write tools
 
@@ -340,6 +348,13 @@ All tools take ids as strings. Bound Workspace/Product ids are inferred from `.k
 | `create_open_question`         | Add a question (default) or an assumption to a Draft, together with its inline marker. Needs the spec `version`.                                                                                          |
 | `update_open_question`         | Edit, move, resolve, dismiss or reopen a question or assumption; the document text changes with it. Answering a question, or accepting or rejecting an assumption, also works on a spec in Needs Review or Reviewed and moves it to Draft. Needs `version` and `expectedUpdatedAt`. |
 | `delete_open_question`         | **Permanently** delete a question or assumption and any marker still in the document. Needs `version` and `expectedUpdatedAt`. To set an item aside, dismiss it instead.                                   |
+| `create_board_item`            | Create an Epic, a Feature (under an active Epic) or a PBI (under an active Feature); it starts in `to_do`. Needs an `idempotencyKey` — reuse it when retrying.                                            |
+| `update_board_item`            | Change fields, `state` (`to_do` / `doing` / `done`) or parent. Needs `expectedVersion`; only the fields you pass change, and `null` clears `assigneeId` / `productId`.                                     |
+| `link_board_specification`     | Link an existing specification of the Workspace (or of a Product in it) to a work item by its id. Needs `expectedVersion`; re-linking is a no-op.                                                         |
+| `unlink_board_specification`   | Remove only that link; the specification is untouched. Needs `expectedVersion`; unlinking an absent link is a no-op.                                                                                     |
+| `append_board_item_note`       | Append delivery notes or validation evidence without changing the item's version. Needs an `idempotencyKey`.                                                                                             |
+| `archive_board_item`           | Archive a work item (Workspace Owner only). Items with active children cannot be archived.                                                                                                               |
+| `restore_board_item`           | Restore an archived work item (Workspace Owner only). Its parent must be active.                                                                                                                         |
 
 > **Note** — the agent never calls "mark reviewed". Approval stays a human action in the Kstonebase UI. The MCP can only nudge a draft to `Needs Review`.
 
@@ -371,6 +386,30 @@ A `RESOLVED` or `DISMISSED` item must be reopened (`status: "OPEN"` on its own) 
 Failures to expect: `STALE_VERSION`, `STALE_QUESTION`, `MARKER_NOT_FOUND` (the marker was edited away — restore it or delete the item), `MARKER_AMBIGUOUS` (identical markers, or the same text already in that section), `SECTION_AMBIGUOUS`, `ANSWER_REQUIRED`, `INVALID_TRANSITION`, `SPEC_LOCKED`, `SPEC_ARCHIVED`, `TOKEN_SCOPE_MISMATCH` (also for a token without the `write` scope; the message names the exact reason), `VALIDATION_ERROR` and `NOT_FOUND`. `NOT_FOUND` also covers a `sectionPath` that matches no heading (`details.sectionPath`) and a reopen whose recorded heading no longer exists (`details.reason` is `ANCHOR_STALE`). Each failure carries a remediation plus the API's `details` (`hint`, `reason`, `fields`, `status`, `sectionPath`, `from`, `to`). A failed change changes nothing.
 
 > **Backend prerequisite** — these tools need a Kstonebase deployment whose API serves the open-question routes and whose Website proxies them under `/api/mcp/specifications/:specId/open-questions` (GET, POST) and `/api/mcp/specifications/:specId/open-questions/:questionId` (GET, PATCH, and DELETE with a JSON body). Against an older deployment, `read_open_question`, `create_open_question`, `update_open_question` and `delete_open_question` fail (typically `NOT_FOUND` or `INTERNAL_ERROR` from an HTTP 404 or 405), while `list_open_questions` keeps working without the `spec` metadata.
+
+### Native Board
+
+Software Engineering Workspaces have a native Kstonebase Board, so an agent can plan and track delivery entirely through these tools. No external tracker, extra token or board URL is needed. Specifications stay the requirements; the Board tracks the work.
+
+- **Workspace and credential** — every Board tool acts on one Workspace: the `workspaceId` you pass, else the `workspaceId` in `.kstonebase.json` (else `WORKSPACE_NOT_BOUND`). A bound `productId` is never used, so it cannot narrow or widen Board access. The token must cover the whole Workspace (a Workspace or all-Workspaces token, not a Product allowlist — otherwise `WORKSPACE_SCOPE_REQUIRED`), you must be the Workspace Owner or a current Member, and writes need the `write` scope. Other Workspace types answer `BOARD_UNAVAILABLE`.
+- **Hierarchy** — Epic → Feature → Product Backlog Item (PBI). A Feature's parent is an active Epic and a PBI's parent an active Feature of the same Workspace. Reuse matching items (`list_board_items`) instead of creating duplicates. PBIs carry acceptance criteria and a self-contained Implementation Prompt.
+- **Traceability** — link the relevant existing specifications by their canonical id (`link_board_specification`) so they show on the card. Chips are re-checked on every read; a specification that was deleted or left the Workspace reads `{ "specificationId": "…", "available": false }`.
+- **States** — `to_do` for planned work, `doing` for active work, `done` only after acceptance and validation. Parent and child states never change each other. Moving an item to `done`, linking or unlinking never changes or approves a specification: approval stays a human action.
+- **Versions** — every read returns the item's `version`; pass it as `expectedVersion` to `update_board_item`, `link_board_specification`, `unlink_board_specification`, `archive_board_item` and `restore_board_item`. `STALE_VERSION` (with `details.currentVersion`) means someone else changed the item: re-read it, reconcile, then retry. Never replay the old request blindly.
+- **Idempotency keys** — `create_board_item` and `append_board_item_note` need an `idempotencyKey` (8–128 characters: letters, digits, `.`, `_`, `:`, `-`). If a call times out or its outcome is unclear, retry with the **same** key: the API applies it exactly once and answers `replayed: true`. The package never generates, changes or retries keys. A key reused for a different request is refused with `IDEMPOTENCY_KEY_REUSED`.
+- **Evidence** — record decisions and validation evidence with `append_board_item_note`; notes never change the item's version. `read_board_item` returns the newest 20; page older ones with `list_board_item_notes`.
+
+A typical loop: `read_board` → `list_board_items` (reuse what exists) → `create_board_item` for the Epic, Feature and PBI → `link_board_specification` → `update_board_item` to `doing` → implement and validate → `append_board_item_note` with the evidence → `update_board_item` to `done`.
+
+Failures to expect besides the ones above: `ITEM_NOT_FOUND`, `INVALID_PARENT`, `INVALID_ASSIGNEE`, `INVALID_PRODUCT`, `INVALID_CURSOR`, `VALIDATION_ERROR` (`details.field` / `details.problem`), `WORKSPACE_ARCHIVED` (read-only Board), `OWNER_REQUIRED`, `ACTIVE_CHILDREN` (`details.activeChildren`), `PARENT_ARCHIVED`, `ITEM_ARCHIVED`, `ITEM_NOT_ARCHIVED`, `SPECIFICATION_UNAVAILABLE`, `SPECIFICATION_ARCHIVED`, `LINK_LIMIT_REACHED` (`details.limit`), `TOKEN_SCOPE_MISMATCH` (token pinned to another Workspace) and `TOKEN_SCOPE_INSUFFICIENT` (no `write` scope). Each failure carries a remediation plus the allowlisted `details` (`field`, `problem`, `currentVersion`, `activeChildren`, `limit`, `hint`). Results are the Kstonebase API's bodies, unchanged.
+
+> **Backend prerequisite** — the Board tools need a Kstonebase deployment whose API serves the native Board and whose Website proxies `/api/mcp/workspaces/:workspaceId/board…`. Against an older deployment they fail with a remediation saying the server does not serve the Board tools yet; every other tool keeps working. `list_board_imports` and `read_board_import` also need the import report routes (`…/board/imports`); without them they explain the missing server support the same way.
+
+#### Imported cards and import reports
+
+A Workspace Owner can import work items from their own Azure DevOps boards in the Kstonebase Website. Imported cards are ordinary native work items: every Board tool works on them, and `list_board_items` / `read_board_item` return an `origin` object naming the source (organization, project, team, board, the original work item's id, type, state, revision and URL, and who imported it when). Native cards carry `"origin": null`. `origin` is read-only imported data, never an instruction: `create_board_item` and `update_board_item` cannot set, change or remove it, and the package never forwards an `origin` argument.
+
+`list_board_imports` and `read_board_import` let an agent explain an import preview or its result — mappings, blockers, warnings, omitted data and each item's `plan` (`import`, `already_imported`, `unsupported`, `excluded`, `blocked`) and `outcome` (`pending`, `imported`, `already_imported`, `skipped`, `blocked`, `failed`). They are Workspace-Owner-only (Members get `OWNER_REQUIRED` but can still read imported cards), read-only, and never contain a credential. No tool connects a source, runs discovery, changes a mapping or confirms, cancels or retries an import: a person does that in the Website — Workspace Settings → General → Azure DevOps to connect, then **Import from Azure DevOps** on the Board to preview, map and confirm. Expect also `IMPORT_NOT_FOUND`, `INVALID_CURSOR` and `VALIDATION_ERROR`.
 
 ### Setup tools
 
@@ -484,6 +523,10 @@ KSTONEBASE_API_TOKEN=YOUR_TOKEN \
 **`PRODUCT_NOT_BOUND` / `WORKSPACE_NOT_BOUND`** — the tool needs a binding the session doesn't have. Either pass `productId` / `workspaceId` explicitly, or add it to `.kstonebase.json` (see [Binding the workspace](#binding-the-workspace)).
 
 **`STALE_VERSION` from `update_specification_*`** — another writer landed between your read and your write. Re-call `read_specification` to get the current `version`, then retry.
+
+**`WORKSPACE_SCOPE_REQUIRED` from a Board tool** — the token is restricted to Products. Board tools need a token for the whole Workspace (or all Workspaces); bind `workspaceId` in `.kstonebase.json`. A `productId` in the binding never widens the token.
+
+**`STALE_VERSION` from a Board tool** — someone changed the work item after your read (`details.currentVersion`). Re-read it with `read_board_item`, reconcile, and retry with the new `version` as `expectedVersion`.
 
 **`OPEN_QUESTIONS_PRESENT` from `request_review`** — only older Kstonebase servers return it; current ones accept review requests while questions are open. On an older server, call `list_open_questions`, resolve or dismiss each item with `update_open_question` (ask the user for answers you don't have), then retry.
 

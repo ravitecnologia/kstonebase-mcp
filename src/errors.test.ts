@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { McpToolError, mapApiError, type ApiErrorBody } from "./errors.js";
+import { McpToolError, boardRemediation, mapApiError, type ApiErrorBody } from "./errors.js";
 
 describe("mapApiError — code priority", () => {
   it("maps VALIDATION_ERROR (422) by status when no body code is set", () => {
@@ -406,5 +406,175 @@ describe("McpToolError", () => {
       message: "gone",
       remediation: "check the id",
     });
+  });
+});
+
+describe("mapApiError — board mode (MCP › mcp-board-tools.md §2.1)", () => {
+  const BOARD_CODES = [
+    "BOARD_UNAVAILABLE",
+    "ITEM_NOT_FOUND",
+    "WORKSPACE_ARCHIVED",
+    "OWNER_REQUIRED",
+    "INVALID_PARENT",
+    "INVALID_ASSIGNEE",
+    "INVALID_PRODUCT",
+    "INVALID_CURSOR",
+    "IDEMPOTENCY_KEY_REUSED",
+    "ACTIVE_CHILDREN",
+    "PARENT_ARCHIVED",
+    "ITEM_ARCHIVED",
+    "ITEM_NOT_ARCHIVED",
+    "SPECIFICATION_UNAVAILABLE",
+    "SPECIFICATION_ARCHIVED",
+    "LINK_LIMIT_REACHED",
+    "STALE_VERSION",
+    "VALIDATION_ERROR",
+    "NOT_FOUND",
+  ];
+
+  it("uses details.code as the tool code for every Board code, whatever the envelope", () => {
+    for (const code of BOARD_CODES) {
+      for (const [status, env] of [[400, "BAD_REQUEST"], [403, "FORBIDDEN"], [404, "NOT_FOUND"], [409, "CONFLICT"]] as const) {
+        const err = mapApiError(status, envelope(env, "m", { code }), "board");
+        expect(err.code, `${env}/${code}`).toBe(code);
+        expect(err.remediation.length).toBeGreaterThan(30);
+      }
+    }
+  });
+
+  it("uses details.code for credential refusals too, unlike the default mode", () => {
+    const cases: Array<[string, string]> = [
+      ["WORKSPACE_SCOPE_REQUIRED", "WORKSPACE_SCOPE_REQUIRED"],
+      ["TOKEN_SCOPE_INSUFFICIENT", "TOKEN_SCOPE_INSUFFICIENT"],
+      ["TOKEN_SCOPE_MISMATCH", "TOKEN_SCOPE_MISMATCH"],
+      ["AUTH_REQUIRED", "AUTH_FAILED"],
+    ];
+    for (const [code, expected] of cases) {
+      const body = envelope(code === "AUTH_REQUIRED" ? "UNAUTHORIZED" : "FORBIDDEN", code, { code });
+      const status = code === "AUTH_REQUIRED" ? 401 : 403;
+      expect(mapApiError(status, body, "board").code).toBe(expected);
+    }
+    // The default mode keeps its pinned vocabulary for every other tool.
+    expect(
+      mapApiError(403, envelope("FORBIDDEN", "WORKSPACE_SCOPE_REQUIRED", { code: "WORKSPACE_SCOPE_REQUIRED" })).code,
+    ).toBe("TOKEN_SCOPE_MISMATCH");
+    expect(
+      mapApiError(403, envelope("FORBIDDEN", "TOKEN_SCOPE_INSUFFICIENT", { code: "TOKEN_SCOPE_INSUFFICIENT" })).code,
+    ).toBe("TOKEN_SCOPE_MISMATCH");
+  });
+
+  it("passes only field, problem, currentVersion, activeChildren, limit and hint", () => {
+    const err = mapApiError(
+      409,
+      envelope("CONFLICT", "m", {
+        code: "STALE_VERSION",
+        currentVersion: 7,
+        item: { id: "bi_1", implementationPrompt: "do not echo" },
+        field: "expectedVersion",
+        problem: "stale",
+        activeChildren: 2,
+        limit: 50,
+        hint: "re-read",
+        reason: "not on the Board allowlist",
+        from: "to_do",
+      }),
+      "board",
+    );
+    expect(err.details).toEqual({
+      field: "expectedVersion",
+      problem: "stale",
+      currentVersion: 7,
+      activeChildren: 2,
+      limit: 50,
+      hint: "re-read",
+    });
+  });
+
+  it("gives STALE_VERSION and WORKSPACE_SCOPE_REQUIRED their Board remediations", () => {
+    const stale = mapApiError(409, envelope("CONFLICT", "m", { code: "STALE_VERSION", currentVersion: 3 }), "board");
+    expect(stale.remediation).toContain("read_board_item");
+    expect(stale.remediation).toContain("Never replay the old request blindly");
+    expect(stale.remediation).not.toContain("read_specification");
+    const scope = mapApiError(403, envelope("FORBIDDEN", "WORKSPACE_SCOPE_REQUIRED", { code: "WORKSPACE_SCOPE_REQUIRED" }), "board");
+    expect(scope.remediation).toContain("whole-Workspace credential");
+    expect(scope.remediation).not.toContain("create Products");
+  });
+
+  it("explains missing server support when a Board route answers without any code", () => {
+    for (const status of [404, 405, 501]) {
+      const err = mapApiError(status, { error: { message: "API returned a non-JSON payload." } }, "board");
+      expect(err.remediation).toContain("does not serve the native Board tools");
+    }
+    expect(mapApiError(404, null, "board").code).toBe("NOT_FOUND");
+    // A coded NOT_FOUND is an inaccessible Workspace, not an old server.
+    expect(mapApiError(404, envelope("NOT_FOUND", "m", { code: "NOT_FOUND" }), "board").remediation).toContain("Owner or a current Member");
+  });
+
+  it("falls back sensibly when no code is present", () => {
+    expect(mapApiError(400, { error: { message: "m" } }, "board").code).toBe("VALIDATION_ERROR");
+    expect(mapApiError(409, envelope("CONFLICT", "m"), "board").code).toBe("STALE_VERSION");
+    expect(mapApiError(429, null, "board").code).toBe("RATE_LIMITED");
+    expect(mapApiError(500, envelope("INTERNAL_ERROR", "INTERNAL_ERROR"), "board").remediation).toContain("same idempotencyKey");
+    for (const code of ["toString", "__proto__"]) {
+      expect(mapApiError(404, envelope(code, "m", { code }), "board").code).toBe("NOT_FOUND");
+    }
+  });
+});
+
+describe("mapApiError — board-import mode (MCP › mcp-board-tools.md §2.2)", () => {
+  it("maps IMPORT_NOT_FOUND from details.code in both Board modes, never in the default mode", () => {
+    for (const mode of ["board", "board-import"] as const) {
+      const err = mapApiError(404, envelope("NOT_FOUND", "m", { code: "IMPORT_NOT_FOUND" }), mode);
+      expect(err.code).toBe("IMPORT_NOT_FOUND");
+      expect(err.remediation).toContain("list_board_imports");
+      expect(err.remediation).toContain("Workspace Settings → General → Azure DevOps");
+      expect(err.remediation).toContain("Import from Azure DevOps");
+    }
+    expect(mapApiError(404, envelope("NOT_FOUND", "m", { code: "IMPORT_NOT_FOUND" })).code).toBe("NOT_FOUND");
+  });
+
+  it("words OWNER_REQUIRED, INVALID_CURSOR, VALIDATION_ERROR and INTERNAL_ERROR for the report reads only", () => {
+    const owner = (mode: "board" | "board-import") =>
+      mapApiError(403, envelope("FORBIDDEN", "m", { code: "OWNER_REQUIRED" }), mode).remediation;
+    expect(owner("board-import")).toContain("import reports are visible to the Workspace Owner only");
+    expect(owner("board-import")).toContain("list_board_items and read_board_item");
+    expect(owner("board")).toContain("archive or restore");
+    expect(owner("board")).not.toContain("import");
+
+    const cursor = mapApiError(400, envelope("BAD_REQUEST", "m", { code: "INVALID_CURSOR", field: "cursor" }), "board-import");
+    expect(cursor.code).toBe("INVALID_CURSOR");
+    expect(cursor.details).toEqual({ field: "cursor" });
+    expect(cursor.remediation).toContain("plan and outcome");
+
+    const invalid = mapApiError(
+      400,
+      envelope("BAD_REQUEST", "m", { code: "VALIDATION_ERROR", field: "outcome", problem: "invalid-value" }),
+      "board-import",
+    );
+    expect(invalid.details).toEqual({ field: "outcome", problem: "invalid-value" });
+    expect(invalid.remediation).toContain("pending, imported, already_imported, skipped, blocked, failed");
+
+    const internal = mapApiError(500, envelope("INTERNAL_ERROR", "INTERNAL_ERROR"), "board-import");
+    expect(internal.code).toBe("INTERNAL_ERROR");
+    expect(internal.remediation).toContain("retry the read once");
+    expect(internal.remediation).not.toContain("idempotencyKey");
+  });
+
+  it("keeps every other Board remediation and the Board detail allowlist", () => {
+    const scope = mapApiError(403, envelope("FORBIDDEN", "W", { code: "WORKSPACE_SCOPE_REQUIRED", hint: "h", token: "x" }), "board-import");
+    expect(scope.code).toBe("WORKSPACE_SCOPE_REQUIRED");
+    expect(scope.remediation).toContain("whole-Workspace credential");
+    expect(scope.details).toEqual({ hint: "h" });
+    const missing = mapApiError(404, envelope("NOT_FOUND", "m", { code: "NOT_FOUND" }), "board-import");
+    expect(missing.remediation).toContain("Owner or a current Member");
+    expect(boardRemediation("BOARD_UNAVAILABLE", "board-import")).toBe(boardRemediation("BOARD_UNAVAILABLE"));
+  });
+
+  it("explains a code-less 404/405/501 as missing import report routes", () => {
+    for (const status of [404, 405, 501]) {
+      const err = mapApiError(status, { error: { message: "API returned a non-JSON payload." } }, "board-import");
+      expect(err.remediation).toContain("does not serve the Board import report tools");
+      expect(err.remediation).toContain("list_board_items and read_board_item");
+    }
   });
 });

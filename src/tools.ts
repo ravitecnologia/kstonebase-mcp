@@ -56,6 +56,169 @@ const UPDATE_OPEN_QUESTION_DESCRIPTION =
 const DELETE_OPEN_QUESTION_DESCRIPTION =
   "Permanently delete an open question or assumption from a Draft Specification. Removes the record and any marker still in the document; prose written by an earlier resolution or dismissal stays. This cannot be undone: to set an item aside, use update_open_question with status DISMISSED instead. Requires version and expectedUpdatedAt from your latest read.";
 
+// ──────────────────────────────────────────────────────────────────────────
+// Native Board tools (Kstonebase MCP spec "mcp-board-tools" §2.1 and §2.2,
+// the frozen tool contract shared with the Kstonebase-hosted endpoint and the
+// Desktop bridge). Names, titles, descriptions, annotations and input schemas
+// must stay identical on every transport; change them only together with the
+// contract.
+// ──────────────────────────────────────────────────────────────────────────
+
+/** All Board annotations carry `idempotentHint: true` (keyed or version-conditioned writes). */
+const BOARD_READ_TOOL: ToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+const BOARD_ADDITIVE_TOOL: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+const BOARD_OVERWRITE_TOOL: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+const BOARD_SPEC_SENTENCE =
+  "Completing or linking work items never changes or approves specifications.";
+
+const boardDescription = (text: string): string =>
+  `${text} ${BOARD_SPEC_SENTENCE}`;
+
+const BOARD_TOOL_TEXT = {
+  read_board: {
+    title: "Read a Workspace Board",
+    description: boardDescription(
+      "Read the native Board of a Software Engineering Workspace: your role, capabilities, states (to_do, doing, done), the advisory Doing WIP limit and whole-Workspace counts per type. Needs a whole-Workspace credential and current Owner/Member access; reading never creates records.",
+    ),
+  },
+  list_board_items: {
+    title: "List Board work items",
+    description: boardDescription(
+      "List Epics, Features and PBIs of a Software Engineering Workspace Board, ordered by priority then number, with filters and cursor pagination. `total` and `counts` describe the whole filtered set, not just this page; follow `nextCursor` to read everything.",
+    ),
+  },
+  read_board_item: {
+    title: "Read a Board work item",
+    description: boardDescription(
+      "Read one work item with its description, PBI acceptance criteria and Implementation Prompt, linked specification chips (re-authorized on every read), newest notes and its `version`. Use the version as `expectedVersion` for changes.",
+    ),
+  },
+  list_board_item_notes: {
+    title: "List work-item notes",
+    description: boardDescription(
+      "List the delivery notes and evidence of a work item, newest first, with cursor pagination.",
+    ),
+  },
+  create_board_item: {
+    title: "Create a Board work item",
+    description: boardDescription(
+      "Create an Epic, a Feature (parent: an active Epic) or a PBI (parent: an active Feature) in the Workspace Board; it starts in to_do. Requires write access and an `idempotencyKey`: reuse the same key when retrying an uncertain create so it is applied exactly once.",
+    ),
+  },
+  update_board_item: {
+    title: "Update a Board work item",
+    description: boardDescription(
+      "Change fields, state or parent of a work item. Send `expectedVersion` from your last read; a STALE_VERSION error means someone else changed it — re-read and reconcile instead of overwriting. Parent and child states never change each other.",
+    ),
+  },
+  link_board_specification: {
+    title: "Link a specification to a work item",
+    description: boardDescription(
+      "Link an existing specification of this Workspace or of a Product currently in it, by its canonical id, so it shows on the card. Linking an already linked specification is a no-op.",
+    ),
+  },
+  unlink_board_specification: {
+    title: "Unlink a specification from a work item",
+    description: boardDescription(
+      "Remove only the link between a work item and a specification; the specification itself is untouched. Unlinking an absent link is a no-op.",
+    ),
+  },
+  append_board_item_note: {
+    title: "Append a work-item note",
+    description: boardDescription(
+      "Append delivery notes or validation evidence to a work item without changing its version. Requires an `idempotencyKey`; reuse it when retrying.",
+    ),
+  },
+  archive_board_item: {
+    title: "Archive a work item",
+    description: boardDescription(
+      "Archive a work item (Workspace Owner only). Items with active children cannot be archived; archive or move the children first.",
+    ),
+  },
+  restore_board_item: {
+    title: "Restore a work item",
+    description: boardDescription(
+      "Restore an archived work item (Workspace Owner only). Its parent must be active.",
+    ),
+  },
+  // Import report reads (spec "mcp-board-tools" §2.2). Report-only: no tool
+  // connects a source, changes a mapping or confirms an import.
+  list_board_imports: {
+    title: "List Board imports",
+    description: boardDescription(
+      "List the Azure DevOps import previews and runs of a Software Engineering Workspace Board, newest first, with their status and honest counts (Workspace Owner only). Reports never contain credentials. Connecting a source and confirming an import are done by a person in Workspace Settings and on the Board, never through tools.",
+    ),
+  },
+  read_board_import: {
+    title: "Read a Board import",
+    description: boardDescription(
+      "Read one Azure DevOps import preview or run (Workspace Owner only): source scope, mappings, warnings, omissions and a page of items with their plan, outcome and native card. Use it to explain mapping problems or results; to change the mapping or confirm, direct the person to the import screen on the Board.",
+    ),
+  },
+} as const;
+
+// Shared zod pieces of the Board input schemas (contract §2.1 bounds).
+const boardWorkspaceId = () => z.string().min(1).max(64).optional();
+const boardItemType = () => z.enum(["epic", "feature", "pbi"]);
+const boardItemState = () => z.enum(["to_do", "doing", "done"]);
+const boardPriority = () => z.number().int().min(1).max(4);
+const boardTitle = () => z.string().min(1).max(256);
+const boardLongText = () => z.string().max(20_000);
+const boardPrompt = () => z.string().max(40_000);
+const boardTags = () => z.array(z.string().max(40)).max(20);
+const boardExpectedVersion = () => z.number().int().min(1);
+const boardLimit = () => z.number().int().min(1).max(100);
+const boardCursor = () => z.string().max(512);
+const boardIdempotencyKey = () =>
+  z.string().regex(/^[A-Za-z0-9._:-]{8,128}$/);
+const boardImportPlan = () =>
+  z.enum(["import", "already_imported", "unsupported", "excluded", "blocked"]);
+const boardImportOutcome = () =>
+  z.enum([
+    "pending",
+    "imported",
+    "already_imported",
+    "skipped",
+    "blocked",
+    "failed",
+  ]);
+
+/**
+ * Board tools act on a Workspace only: the explicit `workspaceId` wins, else
+ * the binding's `workspaceId`. The binding's `productId` is never used, so it
+ * can neither narrow nor widen Board access (contract §2.1, spec §3).
+ */
+function requireBoardWorkspaceId(
+  config: ResolvedConfig,
+  explicit: string | undefined,
+): string {
+  if (explicit && explicit.length > 0) return explicit;
+  if (config.workspaceId) return config.workspaceId;
+  throw new McpToolError(
+    "WORKSPACE_NOT_BOUND",
+    "Board tools need a Workspace, and none is bound to this MCP session. A productId binding never selects a Board.",
+    "Pass workspaceId, or call list_workspaces, pick the Software Engineering Workspace, then add it to .kstonebase.json as `workspaceId` or set KSTONEBASE_WORKSPACE_ID. The credential must cover the whole Workspace.",
+  );
+}
+
 /**
  * Resolves the effective product id — explicit argument wins, then the
  * config's `productId` (file or env). Throws PRODUCT_NOT_BOUND when
@@ -636,6 +799,185 @@ export function registerReadTools(
         },
       ),
   );
+
+  // ────────────────────────────────────────────────────────────────────
+  // Native Board read tools (spec "mcp-board-tools" §2.1). Results are the
+  // API bodies, unchanged.
+  // ────────────────────────────────────────────────────────────────────
+
+  server.registerTool(
+    "read_board",
+    {
+      ...BOARD_TOOL_TEXT.read_board,
+      annotations: BOARD_READ_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+      },
+    },
+    async (args) =>
+      runTool("read_board", { workspaceId: args.workspaceId }, async () => {
+        const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+        const res = await client.readBoard(wsId);
+        return ok(res.body);
+      }),
+  );
+
+  server.registerTool(
+    "list_board_items",
+    {
+      ...BOARD_TOOL_TEXT.list_board_items,
+      annotations: BOARD_READ_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        type: boardItemType().optional(),
+        state: boardItemState().optional(),
+        parentId: z.string().optional(),
+        productId: z.string().optional(),
+        assigneeId: z.string().optional(),
+        priority: boardPriority().optional(),
+        tag: z.string().max(40).optional(),
+        query: z.string().max(200).optional(),
+        archived: z.boolean().optional(),
+        limit: boardLimit().optional(),
+        cursor: boardCursor().optional(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "list_board_items",
+        { workspaceId: args.workspaceId },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.listBoardItems(wsId, {
+            type: args.type,
+            state: args.state,
+            parentId: args.parentId,
+            productId: args.productId,
+            assigneeId: args.assigneeId,
+            priority: args.priority,
+            tag: args.tag,
+            query: args.query,
+            archived: args.archived,
+            limit: args.limit,
+            cursor: args.cursor,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "read_board_item",
+    {
+      ...BOARD_TOOL_TEXT.read_board_item,
+      annotations: BOARD_READ_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        itemId: z.string(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "read_board_item",
+        { workspaceId: args.workspaceId, itemId: args.itemId },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.readBoardItem(wsId, args.itemId);
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "list_board_item_notes",
+    {
+      ...BOARD_TOOL_TEXT.list_board_item_notes,
+      annotations: BOARD_READ_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        itemId: z.string(),
+        limit: boardLimit().optional(),
+        cursor: boardCursor().optional(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "list_board_item_notes",
+        { workspaceId: args.workspaceId, itemId: args.itemId },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.listBoardItemNotes(wsId, args.itemId, {
+            limit: args.limit,
+            cursor: args.cursor,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
+
+  // ────────────────────────────────────────────────────────────────────
+  // Board import report reads (spec "mcp-board-tools" §2.2; API ›
+  // features/azure-devops-board-import.md §8.8). Workspace-Owner-only,
+  // read-only, results unchanged. Imported cards themselves are ordinary
+  // Board items whose `origin` comes back through list/read_board_item(s).
+  // ────────────────────────────────────────────────────────────────────
+
+  server.registerTool(
+    "list_board_imports",
+    {
+      ...BOARD_TOOL_TEXT.list_board_imports,
+      annotations: BOARD_READ_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        limit: boardLimit().optional(),
+        cursor: boardCursor().optional(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "list_board_imports",
+        { workspaceId: args.workspaceId },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.listBoardImports(wsId, {
+            limit: args.limit,
+            cursor: args.cursor,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "read_board_import",
+    {
+      ...BOARD_TOOL_TEXT.read_board_import,
+      annotations: BOARD_READ_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        importId: z.string(),
+        limit: boardLimit().optional(),
+        cursor: boardCursor().optional(),
+        plan: boardImportPlan().optional(),
+        outcome: boardImportOutcome().optional(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "read_board_import",
+        { workspaceId: args.workspaceId, importId: args.importId },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.readBoardImport(wsId, args.importId, {
+            limit: args.limit,
+            cursor: args.cursor,
+            plan: args.plan,
+            outcome: args.outcome,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
 }
 
 export function registerWriteTools(
@@ -1009,6 +1351,243 @@ export function registerWriteTools(
             path: args.path,
             tags: args.tags,
             content: args.content,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
+
+  // ────────────────────────────────────────────────────────────────────
+  // Native Board write tools (spec "mcp-board-tools" §2.1 and §4). Each call
+  // is forwarded once: idempotency keys and expected versions go to the API
+  // exactly as the agent gave them, and conflicts come back for the agent
+  // to re-read and reconcile. Results are the API bodies, unchanged.
+  // ────────────────────────────────────────────────────────────────────
+
+  server.registerTool(
+    "create_board_item",
+    {
+      ...BOARD_TOOL_TEXT.create_board_item,
+      annotations: BOARD_ADDITIVE_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        type: boardItemType(),
+        parentId: z.string().optional(),
+        title: boardTitle(),
+        description: boardLongText().optional(),
+        priority: boardPriority().optional(),
+        tags: boardTags().optional(),
+        assigneeId: z.string().optional(),
+        productId: z.string().optional(),
+        acceptanceCriteria: boardLongText().optional(),
+        implementationPrompt: boardPrompt().optional(),
+        idempotencyKey: boardIdempotencyKey(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "create_board_item",
+        { workspaceId: args.workspaceId, type: args.type },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.createBoardItem(wsId, {
+            type: args.type,
+            parentId: args.parentId,
+            title: args.title,
+            description: args.description,
+            priority: args.priority,
+            tags: args.tags,
+            assigneeId: args.assigneeId,
+            productId: args.productId,
+            acceptanceCriteria: args.acceptanceCriteria,
+            implementationPrompt: args.implementationPrompt,
+            idempotencyKey: args.idempotencyKey,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "update_board_item",
+    {
+      ...BOARD_TOOL_TEXT.update_board_item,
+      annotations: BOARD_OVERWRITE_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        itemId: z.string(),
+        expectedVersion: boardExpectedVersion(),
+        title: boardTitle().optional(),
+        description: boardLongText().optional(),
+        priority: boardPriority().optional(),
+        tags: boardTags().optional(),
+        assigneeId: z.string().nullable().optional(),
+        productId: z.string().nullable().optional(),
+        acceptanceCriteria: boardLongText().optional(),
+        implementationPrompt: boardPrompt().optional(),
+        state: boardItemState().optional(),
+        parentId: z.string().optional(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "update_board_item",
+        { workspaceId: args.workspaceId, itemId: args.itemId },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.updateBoardItem(wsId, args.itemId, {
+            expectedVersion: args.expectedVersion,
+            title: args.title,
+            description: args.description,
+            priority: args.priority,
+            tags: args.tags,
+            assigneeId: args.assigneeId,
+            productId: args.productId,
+            acceptanceCriteria: args.acceptanceCriteria,
+            implementationPrompt: args.implementationPrompt,
+            state: args.state,
+            parentId: args.parentId,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "link_board_specification",
+    {
+      ...BOARD_TOOL_TEXT.link_board_specification,
+      annotations: BOARD_ADDITIVE_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        itemId: z.string(),
+        specificationId: z.string(),
+        expectedVersion: boardExpectedVersion(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "link_board_specification",
+        {
+          workspaceId: args.workspaceId,
+          itemId: args.itemId,
+          specId: args.specificationId,
+        },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.linkBoardSpecification(wsId, args.itemId, {
+            specificationId: args.specificationId,
+            expectedVersion: args.expectedVersion,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "unlink_board_specification",
+    {
+      ...BOARD_TOOL_TEXT.unlink_board_specification,
+      annotations: BOARD_OVERWRITE_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        itemId: z.string(),
+        specificationId: z.string(),
+        expectedVersion: boardExpectedVersion(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "unlink_board_specification",
+        {
+          workspaceId: args.workspaceId,
+          itemId: args.itemId,
+          specId: args.specificationId,
+        },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.unlinkBoardSpecification(
+            wsId,
+            args.itemId,
+            args.specificationId,
+            { expectedVersion: args.expectedVersion },
+          );
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "append_board_item_note",
+    {
+      ...BOARD_TOOL_TEXT.append_board_item_note,
+      annotations: BOARD_ADDITIVE_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        itemId: z.string(),
+        body: z.string().min(1).max(20_000),
+        idempotencyKey: boardIdempotencyKey(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "append_board_item_note",
+        { workspaceId: args.workspaceId, itemId: args.itemId },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.appendBoardItemNote(wsId, args.itemId, {
+            body: args.body,
+            idempotencyKey: args.idempotencyKey,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "archive_board_item",
+    {
+      ...BOARD_TOOL_TEXT.archive_board_item,
+      annotations: BOARD_OVERWRITE_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        itemId: z.string(),
+        expectedVersion: boardExpectedVersion(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "archive_board_item",
+        { workspaceId: args.workspaceId, itemId: args.itemId },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.archiveBoardItem(wsId, args.itemId, {
+            expectedVersion: args.expectedVersion,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "restore_board_item",
+    {
+      ...BOARD_TOOL_TEXT.restore_board_item,
+      annotations: BOARD_ADDITIVE_TOOL,
+      inputSchema: {
+        workspaceId: boardWorkspaceId(),
+        itemId: z.string(),
+        expectedVersion: boardExpectedVersion(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "restore_board_item",
+        { workspaceId: args.workspaceId, itemId: args.itemId },
+        async () => {
+          const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          const res = await client.restoreBoardItem(wsId, args.itemId, {
+            expectedVersion: args.expectedVersion,
           });
           return ok(res.body);
         },

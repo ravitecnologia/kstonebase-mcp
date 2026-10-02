@@ -608,6 +608,58 @@ describe("agent-docs template", () => {
     }
   });
 
+  it("lists the native Board tools for Workspace bindings only", () => {
+    const boardReads = [
+      "read_board",
+      "list_board_items",
+      "read_board_item",
+      "list_board_item_notes",
+      "list_board_imports",
+      "read_board_import",
+    ];
+    const boardWrites = [
+      "create_board_item",
+      "update_board_item",
+      "link_board_specification",
+      "unlink_board_specification",
+      "append_board_item_note",
+      "archive_board_item",
+      "restore_board_item",
+    ];
+    const withWorkspace: AgentDocsBinding[] = [
+      { productId: null, productName: null, productType: null, workspaceId: "W", workspaceName: "ws" },
+      { productId: "P", productName: "f", productType: "free", workspaceId: "W", workspaceName: "ws" },
+    ];
+    for (const binding of withWorkspace) {
+      const inv = buildToolInventory(binding);
+      expect(inv.reads).toEqual(expect.arrayContaining(boardReads));
+      expect(inv.writes).toEqual(expect.arrayContaining(boardWrites));
+      for (const tool of boardWrites) expect(inv.reads).not.toContain(tool);
+      for (const tool of boardReads) expect(inv.writes).not.toContain(tool);
+
+      const body = renderAgentDocs(binding);
+      const writesAt = body.indexOf("Writes:");
+      expect(body.indexOf("- `read_board`")).toBeGreaterThan(-1);
+      expect(body.indexOf("- `read_board`")).toBeLessThan(writesAt);
+      expect(body.indexOf("- `create_board_item`")).toBeGreaterThan(writesAt);
+      // Import report reads are reads; no import setup tool exists.
+      expect(body.indexOf("- `list_board_imports`")).toBeGreaterThan(-1);
+      expect(body.indexOf("- `read_board_import`")).toBeLessThan(writesAt);
+      expect(body).not.toMatch(/azure/i);
+    }
+    const productOnly: AgentDocsBinding[] = [
+      { productId: "P", productName: "f", productType: "free", workspaceId: null, workspaceName: null },
+      { productId: "P", productName: "w", productType: "web_application", workspaceId: null, workspaceName: null },
+    ];
+    for (const binding of productOnly) {
+      const inv = buildToolInventory(binding);
+      for (const tool of [...boardReads, ...boardWrites]) {
+        expect(inv.reads).not.toContain(tool);
+        expect(inv.writes).not.toContain(tool);
+      }
+    }
+  });
+
   it("puts the open-question tools into the planned CLAUDE.md and AGENTS.md", async () => {
     const client = fakeClient(baseState);
     const result = planned(
