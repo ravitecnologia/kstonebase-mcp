@@ -1,6 +1,6 @@
 {
   "name": "@ravitecnologia/kstonebase-mcp",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Model Context Protocol server for Kstonebase — exposes a workspace's specifications to local AI coding agents.",
   "type": "module",
   "license": "Apache-2.0",
