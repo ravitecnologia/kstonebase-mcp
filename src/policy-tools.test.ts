@@ -626,6 +626,35 @@ describe("policy notice — texts and _meta", () => {
     await close();
   });
 
+  it("blank text follows the API's Go unicode.IsSpace rule, not JavaScript trim()", async () => {
+    const answer = (text: string): StubOptions["policyReply"] => () => ({
+      status: 200,
+      json: { items: [{ target: { type: "workspace", id: "ws_1" }, policy: workspacePolicy(REV_WS, text) }] },
+    });
+    // U+FEFF is not whitespace for the API: valid Workspace text.
+    for (const text of ["\uFEFF", "\uFEFF\u3000"]) {
+      const { fetcher } = stubApi({ policyReply: answer(text) });
+      const { mcp, close } = await connect(fetcher, WORKSPACE_ONLY);
+      const out = await call(mcp, "read_board", {});
+      expect(out.content[1].text).toBe(workspaceNotice("workspace:ws_1", REV_WS, text));
+      const tool = await call(mcp, "get_effective_instructions", {});
+      expect(tool.isError).toBe(false);
+      expect(tool.data.policy.instructions).toBe(text);
+      await close();
+    }
+    // Only API whitespace (U+0085, U+3000, …): blank, so the answer is unusable.
+    for (const text of ["\u0085", "\u3000", " \t\n\v\f\r\u00A0\u1680\u2000\u200A\u2028\u2029\u202F\u205F", ""]) {
+      const { fetcher } = stubApi({ policyReply: answer(text) });
+      const { mcp, close } = await connect(fetcher, WORKSPACE_ONLY);
+      const out = await call(mcp, "read_board", {});
+      expect(out.content[1].text).toBe(unavailableNotice("workspace:ws_1", "error"));
+      const tool = await call(mcp, "get_effective_instructions", {});
+      expect(tool.isError).toBe(true);
+      expect(tool.data.code).toBe("INTERNAL_ERROR");
+      await close();
+    }
+  });
+
   it("list_products without a Workspace: the multi-scope notice, no resolver call", async () => {
     const body = { items: [{ id: "p_orphan" }, { id: "p_other" }] };
     const { fetcher, sent } = stubApi({ reply: () => ({ status: 200, json: body }) });

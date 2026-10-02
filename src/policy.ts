@@ -147,6 +147,17 @@ export const MULTIPLE_SCOPES_NOTICE = [
 
 const LOCAL_SOURCES: readonly string[] = ["workspace_local", "detached_product"];
 
+// Go's unicode.IsSpace, which the API uses to refuse blank Workspace text:
+// \t \n \v \f \r, space, U+0085, U+00A0, U+1680, U+2000–U+200A, U+2028,
+// U+2029, U+202F, U+205F and U+3000. Unlike String.prototype.trim(), U+FEFF
+// is not whitespace and U+0085 is.
+const GO_SPACE = /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/;
+
+/** True when the text has a character the API does not count as whitespace. */
+export function hasNonSpace(text: string): boolean {
+  return !GO_SPACE.test(text);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -166,7 +177,7 @@ export function parsePolicy(value: unknown): EffectivePolicy | null {
   }
   if (mode === "workspace") {
     if (source !== "workspace_policy") return null;
-    if (typeof instructions === "string" && instructions.trim().length > 0) {
+    if (typeof instructions === "string" && hasNonSpace(instructions)) {
       return { schemaVersion: 1, mode, source, policyRevision, instructions, instructionsOmitted: false };
     }
     if ((instructions === null || instructions === undefined) && instructionsOmitted) {
