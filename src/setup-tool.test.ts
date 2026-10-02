@@ -573,6 +573,22 @@ describe("agent-docs template", () => {
     expect(both.writes).toContain("create_product");
   });
 
+  it("lists get_effective_instructions as a read for every binding shape", () => {
+    const shapes: AgentDocsBinding[] = [
+      { productId: "P", productName: "f", productType: "free", workspaceId: null, workspaceName: null },
+      { productId: null, productName: null, productType: null, workspaceId: "W", workspaceName: "ws" },
+      { productId: "P", productName: "w", productType: "web_application", workspaceId: "W", workspaceName: "ws" },
+    ];
+    for (const binding of shapes) {
+      const inv = buildToolInventory(binding);
+      expect(inv.reads).toContain("get_effective_instructions");
+      expect(inv.writes).not.toContain("get_effective_instructions");
+      const body = renderAgentDocs(binding);
+      expect(body.indexOf("- `get_effective_instructions`")).toBeGreaterThan(-1);
+      expect(body.indexOf("- `get_effective_instructions`")).toBeLessThan(body.indexOf("Writes:"));
+    }
+  });
+
   it("lists the open-question tools for every binding shape", () => {
     const shapes: AgentDocsBinding[] = [
       { productId: "P", productName: "f", productType: "free", workspaceId: null, workspaceName: null },
