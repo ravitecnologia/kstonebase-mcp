@@ -1,15 +1,24 @@
 // Kstonebase HTTP API client. Wraps the /api/mcp/* surface so tool
 // handlers stay focused on argument shaping. Every outbound request carries
 // `Authorization: Bearer kstonebase_pat_…`; no other auth artifacts are sent
-// (per Kstonebase spec "mcp-server" §5 "Auth header").
+// (per Kstonebase spec "mcp-server" §5 "Auth header"). Writes add
+// `X-Kstonebase-Policy-Revision` only when the agent passed an
+// expectedPolicyRevision (MCP › features/workspace-agent-instructions.md,
+// frozen contract PBI 176).
 
 import {
   McpToolError,
   boardRemediation,
   mapApiError,
+  toolError,
   type ApiErrorBody,
   type ErrorMappingMode,
 } from "./errors.js";
+import {
+  POLICY_REVISION_HEADER,
+  type AgentPolicyResponse,
+  type PolicyTarget,
+} from "./policy.js";
 
 export interface ClientOptions {
   apiUrl: string;
@@ -234,6 +243,20 @@ export interface ReadBoardImportQuery extends PageQuery {
   outcome?: BoardImportOutcome;
 }
 
+/**
+ * Options every write method accepts. `policyRevision` is the agent's
+ * expectedPolicyRevision: sent as the `X-Kstonebase-Policy-Revision` header,
+ * never in the body, and no header at all when it is absent.
+ */
+export interface WriteOptions {
+  policyRevision?: string;
+}
+
+export interface AgentPolicyQuery {
+  /** Ask the resolver to hide enabled text (`instructions=omit`). */
+  omitInstructions?: boolean;
+}
+
 export interface ApiResponse<T> {
   body: T;
   etag: string | null;
@@ -449,6 +472,7 @@ export class KstonebaseClient {
   async createOpenQuestion(
     specId: string,
     input: CreateOpenQuestionInput,
+    options: WriteOptions = {},
   ): Promise<ApiResponse<OpenQuestionResult>> {
     return this.sendJson(
       "POST",
@@ -459,6 +483,8 @@ export class KstonebaseClient {
         kind: input.kind,
         sectionPath: input.sectionPath,
       }),
+      "default",
+      options,
     );
   }
 
@@ -467,6 +493,7 @@ export class KstonebaseClient {
     specId: string,
     questionId: string,
     input: UpdateOpenQuestionInput,
+    options: WriteOptions = {},
   ): Promise<ApiResponse<OpenQuestionResult>> {
     return this.sendJson(
       "PATCH",
@@ -479,6 +506,8 @@ export class KstonebaseClient {
         answer: input.answer,
         status: input.status,
       }),
+      "default",
+      options,
     );
   }
 
@@ -487,6 +516,7 @@ export class KstonebaseClient {
     specId: string,
     questionId: string,
     input: DeleteOpenQuestionInput,
+    options: WriteOptions = {},
   ): Promise<ApiResponse<DeletedOpenQuestionResult>> {
     return this.sendJson(
       "DELETE",
@@ -495,6 +525,8 @@ export class KstonebaseClient {
         version: input.version,
         expectedUpdatedAt: input.expectedUpdatedAt,
       }),
+      "default",
+      options,
     );
   }
 
@@ -558,6 +590,7 @@ export class KstonebaseClient {
   createBoardItem(
     workspaceId: string,
     input: CreateBoardItemInput,
+    options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
     return this.sendJson(
       "POST",
@@ -576,6 +609,7 @@ export class KstonebaseClient {
         idempotencyKey: input.idempotencyKey,
       }),
       "board",
+      options,
     );
   }
 
@@ -584,6 +618,7 @@ export class KstonebaseClient {
     workspaceId: string,
     itemId: string,
     input: UpdateBoardItemInput,
+    options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
     return this.sendJson(
       "PATCH",
@@ -602,6 +637,7 @@ export class KstonebaseClient {
         parentId: input.parentId,
       }),
       "board",
+      options,
     );
   }
 
@@ -610,6 +646,7 @@ export class KstonebaseClient {
     workspaceId: string,
     itemId: string,
     input: { specificationId: string; expectedVersion: number },
+    options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
     return this.sendJson(
       "POST",
@@ -619,6 +656,7 @@ export class KstonebaseClient {
         specificationId: input.specificationId,
       },
       "board",
+      options,
     );
   }
 
@@ -628,12 +666,14 @@ export class KstonebaseClient {
     itemId: string,
     specificationId: string,
     input: { expectedVersion: number },
+    options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
     return this.sendJson(
       "DELETE",
       `${boardItemPath(workspaceId, itemId)}/specifications/${boardSegment("specificationId", specificationId)}`,
       { expectedVersion: input.expectedVersion },
       "board",
+      options,
     );
   }
 
@@ -642,12 +682,14 @@ export class KstonebaseClient {
     workspaceId: string,
     itemId: string,
     input: AppendBoardItemNoteInput,
+    options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
     return this.sendJson(
       "POST",
       `${boardItemPath(workspaceId, itemId)}/notes`,
       { body: input.body, idempotencyKey: input.idempotencyKey },
       "board",
+      options,
     );
   }
 
@@ -656,12 +698,14 @@ export class KstonebaseClient {
     workspaceId: string,
     itemId: string,
     input: { expectedVersion: number },
+    options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
     return this.sendJson(
       "POST",
       `${boardItemPath(workspaceId, itemId)}/archive`,
       { expectedVersion: input.expectedVersion },
       "board",
+      options,
     );
   }
 
@@ -670,12 +714,14 @@ export class KstonebaseClient {
     workspaceId: string,
     itemId: string,
     input: { expectedVersion: number },
+    options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
     return this.sendJson(
       "POST",
       `${boardItemPath(workspaceId, itemId)}/restore`,
       { expectedVersion: input.expectedVersion },
       "board",
+      options,
     );
   }
 
@@ -731,8 +777,11 @@ export class KstonebaseClient {
     return res as ApiResponse<T>;
   }
 
-  private postJson(path: string): Promise<ApiResponse<unknown>> {
-    return this.sendJson("POST", path, undefined);
+  private postJson(
+    path: string,
+    options: WriteOptions = {},
+  ): Promise<ApiResponse<unknown>> {
+    return this.sendJson("POST", path, undefined, "default", options);
   }
 
   private async sendJson<T = unknown>(
@@ -740,12 +789,17 @@ export class KstonebaseClient {
     path: string,
     body: unknown,
     mode: ErrorMappingMode = "default",
+    options: WriteOptions = {},
   ): Promise<ApiResponse<T>> {
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.token}`,
       accept: "application/json",
     };
     if (body !== undefined) headers["content-type"] = "application/json";
+    // The policy precondition travels only as a header, never in the body.
+    if (options.policyRevision !== undefined) {
+      headers[POLICY_REVISION_HEADER] = options.policyRevision;
+    }
 
     const res = await this.fetchOnce(
       `${this.apiUrl}${path}`,
@@ -814,20 +868,27 @@ export class KstonebaseClient {
   // Write endpoints
   // ────────────────────────────────────────────────────────────────────
 
-  startNewVersion(specId: string): Promise<ApiResponse<unknown>> {
+  startNewVersion(
+    specId: string,
+    options: WriteOptions = {},
+  ): Promise<ApiResponse<unknown>> {
     return this.postJson(
       `/api/mcp/specifications/${encodeURIComponent(specId)}/start-new-version`,
+      options,
     );
   }
 
   updateSpecificationContent(
     specId: string,
     body: { content: string; version: number; changeNote?: string },
+    options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
     return this.sendJson(
       "PATCH",
       `/api/mcp/specifications/${encodeURIComponent(specId)}/content`,
       body,
+      "default",
+      options,
     );
   }
 
@@ -839,23 +900,34 @@ export class KstonebaseClient {
       version: number;
       changeNote?: string;
     },
+    options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
     return this.sendJson(
       "PATCH",
       `/api/mcp/specifications/${encodeURIComponent(specId)}/section`,
       body,
+      "default",
+      options,
     );
   }
 
-  requestReview(specId: string): Promise<ApiResponse<unknown>> {
+  requestReview(
+    specId: string,
+    options: WriteOptions = {},
+  ): Promise<ApiResponse<unknown>> {
     return this.postJson(
       `/api/mcp/specifications/${encodeURIComponent(specId)}/request-review`,
+      options,
     );
   }
 
-  discardDraft(specId: string): Promise<ApiResponse<unknown>> {
+  discardDraft(
+    specId: string,
+    options: WriteOptions = {},
+  ): Promise<ApiResponse<unknown>> {
     return this.postJson(
       `/api/mcp/specifications/${encodeURIComponent(specId)}/discard-draft`,
+      options,
     );
   }
 
@@ -867,11 +939,14 @@ export class KstonebaseClient {
       tags?: string[];
       content?: string;
     },
+    options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
     return this.sendJson(
       "POST",
       `/api/mcp/products/${encodeURIComponent(productId)}/specifications`,
       body,
+      "default",
+      options,
     );
   }
 
@@ -888,11 +963,14 @@ export class KstonebaseClient {
       tags?: string[];
       specificationManagementType?: "free" | "web_application";
     },
+    options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
     return this.sendJson(
       "POST",
       `/api/mcp/workspaces/${encodeURIComponent(workspaceId)}/products`,
       body,
+      "default",
+      options,
     );
   }
 
@@ -919,12 +997,71 @@ export class KstonebaseClient {
       sectionTitle?: string;
       version?: number;
     },
+    options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
     return this.sendJson(
       "POST",
       `/api/mcp/specifications/${encodeURIComponent(specId)}/append-context`,
       body,
+      "default",
+      options,
     );
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Effective Workspace instructions (`GET /api/mcp/agent-policy`, the
+  // Website proxy of the API resolver; API frozen contract PBI 174).
+  // ────────────────────────────────────────────────────────────────────
+
+  /**
+   * Resolve the effective policy of 1–25 targets. A server without the
+   * resolver — a 404 without a JSON `error.code` envelope, or a body that is
+   * not JSON — throws POLICY_UNSUPPORTED; any other failure maps as usual.
+   * The body is returned as sent; callers validate it.
+   */
+  async getAgentPolicy(
+    targets: PolicyTarget[],
+    query: AgentPolicyQuery = {},
+  ): Promise<ApiResponse<AgentPolicyResponse>> {
+    const params = new URLSearchParams();
+    for (const target of targets) {
+      params.append("target", `${target.type}:${target.id}`);
+    }
+    if (query.omitInstructions) params.set("instructions", "omit");
+    const res = await this.fetcher(
+      `${this.apiUrl}/api/mcp/agent-policy?${params.toString()}`,
+      {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${this.token}`,
+          accept: "application/json",
+        },
+      },
+    );
+    const text = await res.text();
+    let body: unknown = null;
+    let json = true;
+    if (text.length > 0) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        json = false;
+      }
+    }
+    if (!res.ok) {
+      const code = json ? (body as ApiErrorBody | null)?.error?.code : undefined;
+      if (res.status === 404 && typeof code !== "string") throw policyUnsupported();
+      throw mapApiError(
+        res.status,
+        json ? (body as ApiErrorBody | null) : { error: { message: "API returned a non-JSON payload." } },
+      );
+    }
+    if (!json) throw policyUnsupported();
+    return {
+      body: body as AgentPolicyResponse,
+      etag: res.headers.get("etag"),
+      status: res.status,
+    };
   }
 
   // ────────────────────────────────────────────────────────────────────
@@ -996,6 +1133,13 @@ export class KstonebaseClient {
       );
     }
   }
+}
+
+function policyUnsupported(): McpToolError {
+  return toolError(
+    "POLICY_UNSUPPORTED",
+    "This Kstonebase server does not provide Workspace instructions.",
+  );
 }
 
 function safeParseJson(text: string): unknown {

@@ -1,12 +1,14 @@
 // Cross-transport parity (Kstonebase MCP spec "mcp-server" §3 "tool schemas
 // are byte-identical to the stdio surface"; "mcp-open-question-management"
-// §7.8; "mcp-board-tools" §2.1). The same scripted open-question and native
-// Board session runs over:
+// §7.8; "mcp-board-tools" §2.1; "workspace-agent-instructions", frozen
+// contract PBI 176). The same scripted open-question, native Board and
+// Workspace-instructions session runs over:
 //   * an in-memory transport against buildServer(),
 //   * the real --http transport (startHttpServer),
 //   * the real stdio CLI, spawned as a child process (src/cli.ts via tsx),
 // all pointed at a loopback stub of the Kstonebase API. The advertised tool
-// lists, the tool results and the HTTP requests reaching the API must match.
+// lists, the server instructions, the tool results (policy notices and
+// `_meta` included) and the HTTP requests reaching the API must match.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -115,16 +117,74 @@ const BOARD_STALE_ERROR = {
   },
 };
 
+// Effective Workspace instructions (API resolver, frozen contract PBI 174):
+// ws_1 is in Workspace mode, the specification s_1 resolves Local.
+const WS_REVISION = "wp1_WsPolicyRevision000001";
+const SPEC_REVISION = "wp1_LocalSpecRevision00001";
+const WS_INSTRUCTIONS = "Run the delivery checklist before every Board change.";
+
+const WS_POLICY = {
+  schemaVersion: 1,
+  mode: "workspace",
+  source: "workspace_policy",
+  policyRevision: WS_REVISION,
+  instructions: WS_INSTRUCTIONS,
+  instructionsOmitted: false,
+};
+
+const SPEC_POLICY = {
+  schemaVersion: 1,
+  mode: "local",
+  source: "workspace_local",
+  policyRevision: SPEC_REVISION,
+  instructions: null,
+  instructionsOmitted: false,
+};
+
+const WS_NOTICE = [
+  `[Kstonebase Workspace instructions | target workspace:ws_1 | mode workspace | source workspace_policy | revision ${WS_REVISION}]`,
+  `These verified Workspace instructions govern this resource. They take priority over local AGENTS.md/CLAUDE.md, which only supplement them, and they never grant permissions. Pass expectedPolicyRevision "${WS_REVISION}" on writes to this resource.`,
+  "----- BEGIN WORKSPACE INSTRUCTIONS -----",
+  WS_INSTRUCTIONS,
+  "----- END WORKSPACE INSTRUCTIONS -----",
+].join("\n");
+
+const SPEC_NOTICE = [
+  `[Kstonebase Workspace instructions | target specification:s_1 | mode local | source workspace_local | revision ${SPEC_REVISION}]`,
+  `No Workspace instructions are enabled for this resource. Follow the applicable local AGENTS.md/CLAUDE.md within platform rules. Pass expectedPolicyRevision "${SPEC_REVISION}" on writes to this resource.`,
+].join("\n");
+
+function agentPolicy(path: string): { status: number; json: unknown } {
+  const url = new URL(path, "http://stub.invalid");
+  const omit = url.searchParams.get("instructions") === "omit";
+  const items = url.searchParams.getAll("target").map((t) => {
+    const [type, ...rest] = t.split(":");
+    const target = { type, id: rest.join(":") };
+    if (t === "workspace:ws_1") {
+      return {
+        target,
+        policy: omit ? { ...WS_POLICY, instructions: null, instructionsOmitted: true } : WS_POLICY,
+      };
+    }
+    if (t === "specification:s_1") return { target, policy: SPEC_POLICY };
+    return { target, error: { code: "NOT_FOUND" } };
+  });
+  return { status: 200, json: { items } };
+}
+
 interface SeenRequest {
   method: string;
   path: string;
   authorization: string | undefined;
   cookie: string | undefined;
   contentType: string | undefined;
+  /** X-Kstonebase-Policy-Revision; only present when the agent passed one. */
+  policyRevision?: string;
   body: unknown;
 }
 
 function route(method: string, path: string): { status: number; json: unknown } {
+  if (method === "GET" && path.startsWith("/api/mcp/agent-policy?")) return agentPolicy(path);
   const collection = "/api/mcp/specifications/s_1/open-questions";
   const item = `${collection}/q_1`;
   if (method === "GET" && path === collection) {
@@ -170,6 +230,7 @@ beforeAll(async () => {
         authorization: req.headers.authorization,
         cookie: req.headers.cookie,
         contentType: req.headers["content-type"],
+        policyRevision: req.headers["x-kstonebase-policy-revision"] as string | undefined,
         body: raw.length > 0 ? JSON.parse(raw) : undefined,
       });
       const reply = route(method, path);
@@ -203,6 +264,7 @@ function config(): ResolvedConfig {
 }
 
 interface SessionRecord {
+  instructions: string | undefined;
   tools: unknown[];
   results: unknown[];
   requests: SeenRequest[];
@@ -238,6 +300,7 @@ async function runSession(client: Client): Promise<SessionRecord> {
   const { tools } = await client.listTools();
   const results: unknown[] = [];
   const calls: Array<[string, Record<string, unknown>]> = [
+    ["get_effective_instructions", { workspaceId: "ws_1" }],
     ["list_open_questions", { specId: "s_1" }],
     ["read_open_question", { specId: "s_1", questionId: "q_1" }],
     ["create_open_question", { specId: "s_1", version: 12, body: "Who approves refunds?", sectionPath: null }],
@@ -258,7 +321,10 @@ async function runSession(client: Client): Promise<SessionRecord> {
     ],
     // Native Board tools: no binding in these sessions, so workspaceId is explicit.
     ["list_board_items", { workspaceId: "ws_1", type: "epic", query: "Board", limit: 5 }],
-    ["create_board_item", { workspaceId: "ws_1", type: "epic", title: "Board", idempotencyKey: "parity-create-1" }],
+    [
+      "create_board_item",
+      { workspaceId: "ws_1", type: "epic", title: "Board", idempotencyKey: "parity-create-1", expectedPolicyRevision: WS_REVISION },
+    ],
     ["update_board_item", { workspaceId: "ws_1", itemId: "bi_1", expectedVersion: 1, assigneeId: null, state: "doing" }],
     ["unlink_board_specification", { workspaceId: "ws_1", itemId: "bi_1", specificationId: "s_1", expectedVersion: 2 }],
     ["read_board", {}],
@@ -267,9 +333,14 @@ async function runSession(client: Client): Promise<SessionRecord> {
   ];
   for (const [name, args] of calls) {
     const res = await client.callTool({ name, arguments: args });
-    results.push({ isError: res.isError ?? false, structuredContent: res.structuredContent, content: res.content });
+    results.push({
+      isError: res.isError ?? false,
+      structuredContent: res.structuredContent,
+      content: res.content,
+      _meta: res._meta,
+    });
   }
-  return { tools, results, requests: [...seen] };
+  return { instructions: client.getInstructions(), tools, results, requests: [...seen] };
 }
 
 async function inMemorySession(): Promise<SessionRecord> {
@@ -339,38 +410,95 @@ describe("stdio and HTTP transports", () => {
       expect(JSON.stringify(http.tools)).toBe(JSON.stringify(memory.tools));
       expect(JSON.stringify(stdio.tools)).toBe(JSON.stringify(memory.tools));
       const names = (memory.tools as Array<{ name: string }>).map((t) => t.name);
-      for (const name of [...OPEN_QUESTION_TOOLS, ...BOARD_TOOLS]) expect(names).toContain(name);
+      for (const name of [...OPEN_QUESTION_TOOLS, ...BOARD_TOOLS, "get_effective_instructions"]) {
+        expect(names).toContain(name);
+      }
 
-      // Same results, including the structured STALE_QUESTION failure.
+      // Same server instructions on every transport (decision M5).
+      expect(memory.instructions).toMatch(/^Kstonebase results about a Workspace, Product or specification end with/);
+      expect(http.instructions).toBe(memory.instructions);
+      expect(stdio.instructions).toBe(memory.instructions);
+
+      // Same results, including the structured STALE_QUESTION failure and
+      // the policy notices.
       expect(http.results).toEqual(memory.results);
       expect(stdio.results).toEqual(memory.results);
-      expect(memory.results[1]).toMatchObject({ isError: false, structuredContent: QUESTION_FIXTURE });
-      expect(memory.results[2]).toMatchObject({ isError: false, structuredContent: QUESTION_FIXTURE });
-      expect(memory.results[3]).toMatchObject({
+      const wsMeta = {
+        "kstonebase.com/policy": {
+          target: { type: "workspace", id: "ws_1" },
+          mode: "workspace",
+          source: "workspace_policy",
+          policyRevision: WS_REVISION,
+          instructionsIncluded: true,
+        },
+      };
+      const specMeta = {
+        "kstonebase.com/policy": {
+          target: { type: "specification", id: "s_1" },
+          mode: "local",
+          source: "workspace_local",
+          policyRevision: SPEC_REVISION,
+          instructionsIncluded: false,
+        },
+      };
+      const withNotice = (structuredContent: unknown, notice: string, meta: unknown) => ({
+        isError: false,
+        structuredContent,
+        content: [
+          { type: "text", text: JSON.stringify(structuredContent, null, 2) },
+          { type: "text", text: notice },
+        ],
+        _meta: meta,
+      });
+      expect(memory.results[0]).toEqual(
+        withNotice({ target: { type: "workspace", id: "ws_1" }, policy: WS_POLICY }, WS_NOTICE, wsMeta),
+      );
+      expect(memory.results[2]).toEqual(withNotice(QUESTION_FIXTURE, SPEC_NOTICE, specMeta));
+      expect(memory.results[3]).toEqual(withNotice(QUESTION_FIXTURE, SPEC_NOTICE, specMeta));
+      expect(memory.results[4]).toMatchObject({
         isError: true,
         structuredContent: {
           code: "STALE_QUESTION",
           details: { hint: STALE_QUESTION_ERROR.error.details.hint },
         },
       });
-      expect(memory.results[4]).toMatchObject({ isError: false, structuredContent: DELETE_FIXTURE });
-      expect(memory.results[5]).toMatchObject({ isError: false, structuredContent: { total: 1, items: [BOARD_ITEM_FIXTURE] } });
-      expect(memory.results[6]).toMatchObject({ isError: false, structuredContent: { item: BOARD_ITEM_FIXTURE, replayed: false } });
-      expect(memory.results[7]).toMatchObject({
+      expect(memory.results[5]).toEqual(withNotice(DELETE_FIXTURE, SPEC_NOTICE, specMeta));
+      expect(memory.results[6]).toMatchObject({ isError: false, structuredContent: { total: 1, items: [BOARD_ITEM_FIXTURE] } });
+      // The cached Workspace text fills the notice when the resolver omits it.
+      expect((memory.results[6] as { content: unknown[] }).content[1]).toEqual({ type: "text", text: WS_NOTICE });
+      expect(memory.results[7]).toEqual(withNotice({ item: BOARD_ITEM_FIXTURE, replayed: false }, WS_NOTICE, wsMeta));
+      expect(memory.results[8]).toMatchObject({
         isError: true,
         structuredContent: { code: "STALE_VERSION", details: { currentVersion: 2 } },
       });
-      expect(memory.results[8]).toMatchObject({ isError: false, structuredContent: BOARD_ITEM_FIXTURE });
+      expect(memory.results[9]).toEqual(withNotice(BOARD_ITEM_FIXTURE, WS_NOTICE, wsMeta));
       // No Workspace binding: read_board fails locally on every transport.
-      expect(memory.results[9]).toMatchObject({ isError: true, structuredContent: { code: "WORKSPACE_NOT_BOUND" } });
+      expect(memory.results[10]).toMatchObject({ isError: true, structuredContent: { code: "WORKSPACE_NOT_BOUND" } });
       // Import report reads: RunDetail unchanged; a Member's report read is OWNER_REQUIRED.
-      expect(memory.results[10]).toMatchObject({ isError: false, structuredContent: BOARD_IMPORT_FIXTURE });
-      expect(memory.results[11]).toMatchObject({ isError: true, structuredContent: { code: "OWNER_REQUIRED" } });
+      expect(memory.results[11]).toEqual(withNotice(BOARD_IMPORT_FIXTURE, WS_NOTICE, wsMeta));
+      expect(memory.results[12]).toMatchObject({ isError: true, structuredContent: { code: "OWNER_REQUIRED" } });
+      // Failed results carry no notice and no policy _meta.
+      for (const i of [4, 8, 10, 12]) {
+        const failed = memory.results[i] as { content: unknown[]; _meta?: unknown };
+        expect(failed.content).toHaveLength(1);
+        expect(failed._meta).toBeUndefined();
+      }
 
-      // Same requests at the API: one per call, no retries, Bearer only.
+      // Same requests at the API: one per call plus one fresh resolver call
+      // after each successful scoped call, no retries, Bearer only; the
+      // policy revision travels only as a header on the write that passed it.
       expect(http.requests).toEqual(memory.requests);
       expect(stdio.requests).toEqual(memory.requests);
+      const policyGet = (target: string, omit = false) => ({
+        method: "GET",
+        path: `/api/mcp/agent-policy?target=${encodeURIComponent(target)}${omit ? "&instructions=omit" : ""}`,
+        authorization: `Bearer ${TOKEN}`,
+        cookie: undefined,
+        contentType: undefined,
+        body: undefined,
+      });
       expect(memory.requests).toEqual([
+        policyGet("workspace:ws_1"),
         {
           method: "GET",
           path: "/api/mcp/specifications/s_1/open-questions",
@@ -379,6 +507,7 @@ describe("stdio and HTTP transports", () => {
           contentType: undefined,
           body: undefined,
         },
+        policyGet("specification:s_1"),
         {
           method: "GET",
           path: "/api/mcp/specifications/s_1/open-questions/q_1",
@@ -387,6 +516,7 @@ describe("stdio and HTTP transports", () => {
           contentType: undefined,
           body: undefined,
         },
+        policyGet("specification:s_1"),
         {
           method: "POST",
           path: "/api/mcp/specifications/s_1/open-questions",
@@ -395,6 +525,7 @@ describe("stdio and HTTP transports", () => {
           contentType: "application/json",
           body: { version: 12, body: "Who approves refunds?", sectionPath: null },
         },
+        policyGet("specification:s_1"),
         {
           method: "PATCH",
           path: "/api/mcp/specifications/s_1/open-questions/q_1",
@@ -416,6 +547,7 @@ describe("stdio and HTTP transports", () => {
           contentType: "application/json",
           body: { version: 14, expectedUpdatedAt: "2026-09-26T18:04:05.123Z" },
         },
+        policyGet("specification:s_1"),
         {
           method: "GET",
           path: "/api/mcp/workspaces/ws_1/board/items?type=epic&q=Board&limit=5",
@@ -424,14 +556,17 @@ describe("stdio and HTTP transports", () => {
           contentType: undefined,
           body: undefined,
         },
+        policyGet("workspace:ws_1", true),
         {
           method: "POST",
           path: "/api/mcp/workspaces/ws_1/board/items",
           authorization: `Bearer ${TOKEN}`,
           cookie: undefined,
           contentType: "application/json",
+          policyRevision: WS_REVISION,
           body: { type: "epic", title: "Board", idempotencyKey: "parity-create-1" },
         },
+        policyGet("workspace:ws_1", true),
         {
           method: "PATCH",
           path: "/api/mcp/workspaces/ws_1/board/items/bi_1",
@@ -448,6 +583,7 @@ describe("stdio and HTTP transports", () => {
           contentType: "application/json",
           body: { expectedVersion: 2 },
         },
+        policyGet("workspace:ws_1", true),
         {
           method: "GET",
           path: "/api/mcp/workspaces/ws_1/board/imports/run_1?limit=10&plan=blocked",
@@ -456,6 +592,7 @@ describe("stdio and HTTP transports", () => {
           contentType: undefined,
           body: undefined,
         },
+        policyGet("workspace:ws_1", true),
         {
           method: "GET",
           path: "/api/mcp/workspaces/ws_1/board/imports",
@@ -465,6 +602,7 @@ describe("stdio and HTTP transports", () => {
           body: undefined,
         },
       ]);
+      expect(memory.requests.filter((r) => r.policyRevision !== undefined)).toHaveLength(1);
     },
     60_000,
   );

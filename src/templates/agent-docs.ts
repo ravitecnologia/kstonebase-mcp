@@ -167,6 +167,9 @@ export function buildToolInventory(binding: AgentDocsBinding): ToolInventory {
     "list_workspaces",
     "read_workspace",
     "find_product_by_subject",
+    // Effective Workspace instructions (MCP spec "workspace-agent-
+    // instructions", frozen contract PBI 176): every binding shape.
+    "get_effective_instructions",
   ];
 
   // Open-question tools work on Product (Free or Web Application) and

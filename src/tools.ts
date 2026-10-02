@@ -2,24 +2,47 @@
 // "Tool naming"). The stdio and --http transports both build their server
 // through buildServer(), so every tool registered here is advertised with
 // the same name, schema and annotations on each.
+//
+// Effective Workspace instructions (MCP › features/workspace-agent-
+// instructions.md, frozen contract PBI 176): every successful result of a
+// tool that addresses a Workspace, Product or specification ends with one
+// policy notice item plus `_meta["kstonebase.com/policy"]`, and every API
+// write tool accepts `expectedPolicyRevision`.
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 
-import type { KstonebaseClient } from "./client.js";
+import type { KstonebaseClient, WriteOptions } from "./client.js";
 import type { ResolvedConfig } from "./config.js";
 import {
   McpToolError,
   buildClientFailure,
+  toolError,
   type McpFailure,
 } from "./errors.js";
 import { logger } from "./logger.js";
+import {
+  EXPECTED_POLICY_REVISION_DESCRIPTION,
+  GET_EFFECTIVE_INSTRUCTIONS_DESCRIPTION,
+  GET_EFFECTIVE_INSTRUCTIONS_TITLE,
+  POLICY_REVISION_PATTERN,
+  PolicyNotices,
+  type PolicyOutcome,
+  type PolicyScope,
+  type PolicyTarget,
+} from "./policy.js";
 import { runInitProduct, runInitWorkspace } from "./setup-tool.js";
 
 interface ToolDeps {
   client: KstonebaseClient;
   config: ResolvedConfig;
+  /**
+   * Builds the policy notices. buildServer() shares one instance between the
+   * read and write tools (one credential, one text cache); a fresh one is
+   * created when it is omitted.
+   */
+  policy?: PolicyNotices;
 }
 
 const READ_TOOL: ToolAnnotations = {
@@ -202,6 +225,54 @@ const boardImportOutcome = () =>
   ]);
 
 /**
+ * `expectedPolicyRevision` on every API write tool (frozen contract PBI 176,
+ * "Writes"). Sent only as the X-Kstonebase-Policy-Revision header.
+ */
+const expectedPolicyRevision = () =>
+  z
+    .string()
+    .regex(POLICY_REVISION_PATTERN)
+    .optional()
+    .describe(EXPECTED_POLICY_REVISION_DESCRIPTION);
+
+/** The client's write options for a tool call. */
+function writeOptions(args: { expectedPolicyRevision?: string }): WriteOptions {
+  return args.expectedPolicyRevision === undefined
+    ? {}
+    : { policyRevision: args.expectedPolicyRevision };
+}
+
+/**
+ * get_effective_instructions target: at most one explicit id, else the
+ * standalone binding (productId before workspaceId), else
+ * POLICY_TARGET_REQUIRED.
+ */
+function resolveInstructionsTarget(
+  config: ResolvedConfig,
+  args: { workspaceId?: string; productId?: string; specificationId?: string },
+): PolicyTarget {
+  const given: PolicyTarget[] = [];
+  if (args.workspaceId !== undefined) given.push({ type: "workspace", id: args.workspaceId });
+  if (args.productId !== undefined) given.push({ type: "product", id: args.productId });
+  if (args.specificationId !== undefined) {
+    given.push({ type: "specification", id: args.specificationId });
+  }
+  if (given.length > 1) {
+    throw toolError(
+      "VALIDATION_ERROR",
+      "Pass at most one of workspaceId, productId or specificationId.",
+    );
+  }
+  if (given.length === 1) return given[0];
+  if (config.productId) return { type: "product", id: config.productId };
+  if (config.workspaceId) return { type: "workspace", id: config.workspaceId };
+  throw toolError(
+    "POLICY_TARGET_REQUIRED",
+    "No Workspace, Product or specification to resolve.",
+  );
+}
+
+/**
  * Board tools act on a Workspace only: the explicit `workspaceId` wins, else
  * the binding's `workspaceId`. The binding's `productId` is never used, so it
  * can neither narrow nor widen Board access (contract §2.1, spec §3).
@@ -365,52 +436,80 @@ function fail(failure: McpFailure): ToolResult {
   };
 }
 
+/** Lets a tool body declare what its call addresses, for the policy notice. */
+interface ToolCall {
+  /** The Workspace, Product or specification this call addresses. */
+  addresses(target: PolicyTarget, resolved?: PolicyOutcome): void;
+  /** The results span several Workspaces or standalone Products. */
+  spansScopes(): void;
+}
+
+type ToolBody = (call: ToolCall) => Promise<ToolResult>;
+
 /**
- * Wrap an async tool body so any thrown McpToolError translates to a
- * structured tool failure. Anything else maps to INTERNAL_ERROR — agents
- * can decide whether to retry. Tool calls also emit a debug log line
- * matching the spec's `tool / productId / specId / durationMs / errorCode`
- * shape.
+ * Build the per-server tool runner. It wraps an async tool body so any thrown
+ * McpToolError translates to a structured tool failure. Anything else maps
+ * to INTERNAL_ERROR — agents can decide whether to retry. Tool calls also
+ * emit a debug log line matching the spec's `tool / productId / specId /
+ * durationMs / errorCode` shape. A successful result whose body declared a
+ * scope gets its policy notice appended (failed results never do).
  */
-async function runTool(
-  name: string,
-  context: Record<string, unknown>,
-  body: () => Promise<ToolResult>,
-): Promise<ToolResult> {
-  const startedAt = Date.now();
-  try {
-    const result = await body();
-    logger.debug("tool", {
-      tool: name,
-      durationMs: Date.now() - startedAt,
-      ...context,
-    });
-    return result;
-  } catch (err) {
-    const durationMs = Date.now() - startedAt;
-    if (err instanceof McpToolError) {
-      logger.warn("tool failed", {
+function createToolRunner(policy: PolicyNotices) {
+  return async function runTool(
+    name: string,
+    context: Record<string, unknown>,
+    body: ToolBody,
+  ): Promise<ToolResult> {
+    const startedAt = Date.now();
+    let scope: PolicyScope | undefined;
+    let resolved: PolicyOutcome | undefined;
+    const call: ToolCall = {
+      addresses(target, outcome) {
+        scope = { kind: "target", target };
+        resolved = outcome;
+      },
+      spansScopes() {
+        scope = { kind: "multiple-scopes" };
+        resolved = undefined;
+      },
+    };
+    try {
+      const result = await body(call);
+      if (scope && result.isError !== true) {
+        await policy.decorate(result, scope, resolved);
+      }
+      logger.debug("tool", {
         tool: name,
-        durationMs,
-        errorCode: err.code,
+        durationMs: Date.now() - startedAt,
         ...context,
       });
-      return fail(err.toFailure());
+      return result;
+    } catch (err) {
+      const durationMs = Date.now() - startedAt;
+      if (err instanceof McpToolError) {
+        logger.warn("tool failed", {
+          tool: name,
+          durationMs,
+          errorCode: err.code,
+          ...context,
+        });
+        return fail(err.toFailure());
+      }
+      logger.error("tool crashed", {
+        tool: name,
+        durationMs,
+        errorCode: "INTERNAL_ERROR",
+        err: (err as Error).message,
+        ...context,
+      });
+      return fail(
+        buildClientFailure(
+          "INTERNAL_ERROR",
+          (err as Error).message ?? "Unexpected MCP server error.",
+        ),
+      );
     }
-    logger.error("tool crashed", {
-      tool: name,
-      durationMs,
-      errorCode: "INTERNAL_ERROR",
-      err: (err as Error).message,
-      ...context,
-    });
-    return fail(
-      buildClientFailure(
-        "INTERNAL_ERROR",
-        (err as Error).message ?? "Unexpected MCP server error.",
-      ),
-    );
-  }
+  };
 }
 
 export function registerReadTools(
@@ -418,6 +517,45 @@ export function registerReadTools(
   deps: ToolDeps,
 ): void {
   const { client, config } = deps;
+  const policy = deps.policy ?? new PolicyNotices(client);
+  const runTool = createToolRunner(policy);
+
+  // Effective Workspace instructions (frozen contract PBI 176, decision M1:
+  // a tool, so it reaches every transport identically).
+  server.registerTool(
+    "get_effective_instructions",
+    {
+      title: GET_EFFECTIVE_INSTRUCTIONS_TITLE,
+      description: GET_EFFECTIVE_INSTRUCTIONS_DESCRIPTION,
+      annotations: READ_TOOL,
+      inputSchema: {
+        workspaceId: z.string().min(1).max(100).optional().describe("Workspace id."),
+        productId: z.string().min(1).max(100).optional().describe("Product id."),
+        specificationId: z
+          .string()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe("Specification id."),
+      },
+    },
+    async (args) =>
+      runTool(
+        "get_effective_instructions",
+        {
+          workspaceId: args.workspaceId,
+          productId: args.productId,
+          specId: args.specificationId,
+        },
+        async (call) => {
+          const target = resolveInstructionsTarget(config, args);
+          const fetched = await policy.fetchForTool(target);
+          // The notice reuses this same fresh resolver answer.
+          call.addresses(target, fetched.outcome);
+          return ok({ target, policy: fetched.policy });
+        },
+      ),
+  );
 
   server.registerTool(
     "list_products",
@@ -431,11 +569,15 @@ export function registerReadTools(
       },
     },
     async (args) =>
-      runTool("list_products", { workspaceId: args.workspaceId }, async () => {
+      runTool("list_products", { workspaceId: args.workspaceId }, async (call) => {
         // Default: when bound to a Workspace, list its member Products.
         // Otherwise list orphan Products so the agent can pick one to bind.
         const explicit = args.workspaceId;
         const wsId = explicit ?? config.workspaceId ?? undefined;
+        // One Workspace's Products → its notice; standalone Products span
+        // several scopes → the multi-scope notice.
+        if (wsId) call.addresses({ type: "workspace", id: wsId });
+        else call.spansScopes();
         const res = await client.listProducts(
           wsId ? { workspaceId: wsId } : { orphan: true },
         );
@@ -471,8 +613,9 @@ export function registerReadTools(
       },
     },
     async (args) =>
-      runTool("read_product", { productId: args.productId }, async () => {
+      runTool("read_product", { productId: args.productId }, async (call) => {
         const productId = requireProductId(config, args.productId);
+        call.addresses({ type: "product", id: productId });
         const res = await client.readProduct(productId);
         return ok(res.body);
       }),
@@ -493,8 +636,9 @@ export function registerReadTools(
       runTool(
         "read_workspace",
         { workspaceId: args.workspaceId },
-        async () => {
+        async (call) => {
           const wsId = requireWorkspaceId(config, args.workspaceId);
+          call.addresses({ type: "workspace", id: wsId });
           const res = await client.readWorkspace(wsId);
           return ok(res.body);
         },
@@ -533,8 +677,9 @@ export function registerReadTools(
           productId: args.productId,
           workspaceId: args.workspaceId,
         },
-        async () => {
+        async (call) => {
           const target = resolveListSpecificationsTarget(config, args);
+          call.addresses({ type: target.scope, id: target.id });
           const query = {
             type: args.type,
             status: args.status,
@@ -577,8 +722,9 @@ export function registerReadTools(
           productId: args.productId,
           workspaceId: args.workspaceId,
         },
-        async () => {
+        async (call) => {
           const target = resolveSearchSpecificationsTarget(config, args);
+          call.addresses({ type: target.scope, id: target.id });
           const query = {
             query: args.query,
             limit: args.limit,
@@ -606,7 +752,8 @@ export function registerReadTools(
       },
     },
     async (args) =>
-      runTool("read_specification", { specId: args.specId }, async () => {
+      runTool("read_specification", { specId: args.specId }, async (call) => {
+        call.addresses({ type: "specification", id: args.specId });
         const res = await client.readSpecification(args.specId, {
           format: args.format,
         });
@@ -634,7 +781,8 @@ export function registerReadTools(
       runTool(
         "list_specification_versions",
         { specId: args.specId },
-        async () => {
+        async (call) => {
+          call.addresses({ type: "specification", id: args.specId });
           const res = await client.listSpecificationVersions(args.specId);
           return ok(res.body);
         },
@@ -657,7 +805,8 @@ export function registerReadTools(
       runTool(
         "read_specification_version",
         { specId: args.specId },
-        async () => {
+        async (call) => {
+          call.addresses({ type: "specification", id: args.specId });
           const res = await client.readSpecificationVersion(
             args.specId,
             args.revisionId,
@@ -685,7 +834,8 @@ export function registerReadTools(
       runTool(
         "list_specification_changes",
         { specId: args.specId },
-        async () => {
+        async (call) => {
+          call.addresses({ type: "specification", id: args.specId });
           const res = await client.listSpecificationChanges(args.specId);
           return ok(res.body);
         },
@@ -708,7 +858,8 @@ export function registerReadTools(
       runTool(
         "read_specification_change",
         { specId: args.specId },
-        async () => {
+        async (call) => {
+          call.addresses({ type: "specification", id: args.specId });
           const res = await client.readSpecificationChange(
             args.specId,
             args.changeId,
@@ -734,7 +885,8 @@ export function registerReadTools(
       },
     },
     async (args) =>
-      runTool("list_open_questions", { specId: args.specId }, async () => {
+      runTool("list_open_questions", { specId: args.specId }, async (call) => {
+        call.addresses({ type: "specification", id: args.specId });
         const res = await client.listOpenQuestions(args.specId, {
           includeResolved: args.includeResolved,
         });
@@ -757,7 +909,8 @@ export function registerReadTools(
       runTool(
         "read_open_question",
         { specId: args.specId, questionId: args.questionId },
-        async () => {
+        async (call) => {
+          call.addresses({ type: "specification", id: args.specId });
           const res = await client.readOpenQuestion(
             args.specId,
             args.questionId,
@@ -789,8 +942,9 @@ export function registerReadTools(
       runTool(
         "find_product_by_subject",
         { workspaceId: args.workspaceId },
-        async () => {
+        async (call) => {
           const wsId = requireWorkspaceId(config, args.workspaceId);
+          call.addresses({ type: "workspace", id: wsId });
           const res = await client.findProductBySubject(wsId, {
             subject: args.subject,
             limit: args.limit,
@@ -815,8 +969,9 @@ export function registerReadTools(
       },
     },
     async (args) =>
-      runTool("read_board", { workspaceId: args.workspaceId }, async () => {
+      runTool("read_board", { workspaceId: args.workspaceId }, async (call) => {
         const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+        call.addresses({ type: "workspace", id: wsId });
         const res = await client.readBoard(wsId);
         return ok(res.body);
       }),
@@ -846,8 +1001,9 @@ export function registerReadTools(
       runTool(
         "list_board_items",
         { workspaceId: args.workspaceId },
-        async () => {
+        async (call) => {
           const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          call.addresses({ type: "workspace", id: wsId });
           const res = await client.listBoardItems(wsId, {
             type: args.type,
             state: args.state,
@@ -880,8 +1036,9 @@ export function registerReadTools(
       runTool(
         "read_board_item",
         { workspaceId: args.workspaceId, itemId: args.itemId },
-        async () => {
+        async (call) => {
           const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          call.addresses({ type: "workspace", id: wsId });
           const res = await client.readBoardItem(wsId, args.itemId);
           return ok(res.body);
         },
@@ -904,8 +1061,9 @@ export function registerReadTools(
       runTool(
         "list_board_item_notes",
         { workspaceId: args.workspaceId, itemId: args.itemId },
-        async () => {
+        async (call) => {
           const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          call.addresses({ type: "workspace", id: wsId });
           const res = await client.listBoardItemNotes(wsId, args.itemId, {
             limit: args.limit,
             cursor: args.cursor,
@@ -937,8 +1095,9 @@ export function registerReadTools(
       runTool(
         "list_board_imports",
         { workspaceId: args.workspaceId },
-        async () => {
+        async (call) => {
           const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          call.addresses({ type: "workspace", id: wsId });
           const res = await client.listBoardImports(wsId, {
             limit: args.limit,
             cursor: args.cursor,
@@ -966,8 +1125,9 @@ export function registerReadTools(
       runTool(
         "read_board_import",
         { workspaceId: args.workspaceId, importId: args.importId },
-        async () => {
+        async (call) => {
           const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          call.addresses({ type: "workspace", id: wsId });
           const res = await client.readBoardImport(wsId, args.importId, {
             limit: args.limit,
             cursor: args.cursor,
@@ -985,6 +1145,7 @@ export function registerWriteTools(
   deps: ToolDeps,
 ): void {
   const { client, config } = deps;
+  const runTool = createToolRunner(deps.policy ?? new PolicyNotices(client));
 
   server.registerTool(
     "start_new_version",
@@ -993,11 +1154,15 @@ export function registerWriteTools(
       description:
         "Open a new draft of a Reviewed specification. Side effect: status becomes Draft. Does not bump the user-visible version. Required before update_specification_content on a published spec. No-op when the spec is already in Draft (response carries hint=\"already_draft\").",
       annotations: ADDITIVE_WRITE_TOOL,
-      inputSchema: { specId: z.string().min(1) },
+      inputSchema: {
+        specId: z.string().min(1),
+        expectedPolicyRevision: expectedPolicyRevision(),
+      },
     },
     async (args) =>
-      runTool("start_new_version", { specId: args.specId }, async () => {
-        const res = await client.startNewVersion(args.specId);
+      runTool("start_new_version", { specId: args.specId }, async (call) => {
+        call.addresses({ type: "specification", id: args.specId });
+        const res = await client.startNewVersion(args.specId, writeOptions(args));
         return ok(res.body);
       }),
   );
@@ -1014,18 +1179,24 @@ export function registerWriteTools(
         content: z.string().max(1_000_000),
         version: z.number().int().min(1),
         changeNote: z.string().trim().min(1).max(2_000).optional(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
       runTool(
         "update_specification_content",
         { specId: args.specId },
-        async () => {
-          const res = await client.updateSpecificationContent(args.specId, {
-            content: args.content,
-            version: args.version,
-            changeNote: args.changeNote,
-          });
+        async (call) => {
+          call.addresses({ type: "specification", id: args.specId });
+          const res = await client.updateSpecificationContent(
+            args.specId,
+            {
+              content: args.content,
+              version: args.version,
+              changeNote: args.changeNote,
+            },
+            writeOptions(args),
+          );
           return ok(res.body);
         },
       ),
@@ -1044,19 +1215,25 @@ export function registerWriteTools(
         newSection: z.string().max(1_000_000),
         version: z.number().int().min(1),
         changeNote: z.string().trim().min(1).max(2_000).optional(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
       runTool(
         "update_specification_section",
         { specId: args.specId },
-        async () => {
-          const res = await client.updateSpecificationSection(args.specId, {
-            sectionPath: args.sectionPath,
-            newSection: args.newSection,
-            version: args.version,
-            changeNote: args.changeNote,
-          });
+        async (call) => {
+          call.addresses({ type: "specification", id: args.specId });
+          const res = await client.updateSpecificationSection(
+            args.specId,
+            {
+              sectionPath: args.sectionPath,
+              newSection: args.newSection,
+              version: args.version,
+              changeNote: args.changeNote,
+            },
+            writeOptions(args),
+          );
           return ok(res.body);
         },
       ),
@@ -1069,11 +1246,15 @@ export function registerWriteTools(
       description:
         "Move a Draft specification to Needs Review so a human can mark it Reviewed in Kstonebase. Open questions do not block it: they stay open for the reviewer. An older Kstonebase server may still refuse with OPEN_QUESTIONS_PRESENT; then surface the open questions to the user.",
       annotations: ADDITIVE_WRITE_TOOL,
-      inputSchema: { specId: z.string().min(1) },
+      inputSchema: {
+        specId: z.string().min(1),
+        expectedPolicyRevision: expectedPolicyRevision(),
+      },
     },
     async (args) =>
-      runTool("request_review", { specId: args.specId }, async () => {
-        const res = await client.requestReview(args.specId);
+      runTool("request_review", { specId: args.specId }, async (call) => {
+        call.addresses({ type: "specification", id: args.specId });
+        const res = await client.requestReview(args.specId, writeOptions(args));
         return ok(res.body);
       }),
   );
@@ -1085,11 +1266,15 @@ export function registerWriteTools(
       description:
         "Roll a Draft (or Needs Review) specification back to its last approved version. Side effect: content is restored from the latest approved revision and status returns to Reviewed. Rejected when the spec has never been approved.",
       annotations: OVERWRITE_WRITE_TOOL,
-      inputSchema: { specId: z.string().min(1) },
+      inputSchema: {
+        specId: z.string().min(1),
+        expectedPolicyRevision: expectedPolicyRevision(),
+      },
     },
     async (args) =>
-      runTool("discard_draft", { specId: args.specId }, async () => {
-        const res = await client.discardDraft(args.specId);
+      runTool("discard_draft", { specId: args.specId }, async (call) => {
+        call.addresses({ type: "specification", id: args.specId });
+        const res = await client.discardDraft(args.specId, writeOptions(args));
         return ok(res.body);
       }),
   );
@@ -1113,16 +1298,22 @@ export function registerWriteTools(
         body: z.string(),
         kind: z.enum(["QUESTION", "ASSUMPTION"]).optional(),
         sectionPath: z.string().nullable().optional(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
-      runTool("create_open_question", { specId: args.specId }, async () => {
-        const res = await client.createOpenQuestion(args.specId, {
-          version: args.version,
-          body: args.body,
-          kind: args.kind,
-          sectionPath: args.sectionPath,
-        });
+      runTool("create_open_question", { specId: args.specId }, async (call) => {
+        call.addresses({ type: "specification", id: args.specId });
+        const res = await client.createOpenQuestion(
+          args.specId,
+          {
+            version: args.version,
+            body: args.body,
+            kind: args.kind,
+            sectionPath: args.sectionPath,
+          },
+          writeOptions(args),
+        );
         return ok(res.body);
       }),
   );
@@ -1142,13 +1333,15 @@ export function registerWriteTools(
         sectionPath: z.string().nullable().optional(),
         answer: z.string().nullable().optional(),
         status: z.enum(["OPEN", "RESOLVED", "DISMISSED"]).optional(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
       runTool(
         "update_open_question",
         { specId: args.specId, questionId: args.questionId },
-        async () => {
+        async (call) => {
+          call.addresses({ type: "specification", id: args.specId });
           const res = await client.updateOpenQuestion(
             args.specId,
             args.questionId,
@@ -1160,6 +1353,7 @@ export function registerWriteTools(
               answer: args.answer,
               status: args.status,
             },
+            writeOptions(args),
           );
           return ok(res.body);
         },
@@ -1177,13 +1371,15 @@ export function registerWriteTools(
         questionId: z.string(),
         version: z.number().int(),
         expectedUpdatedAt: z.string(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
       runTool(
         "delete_open_question",
         { specId: args.specId, questionId: args.questionId },
-        async () => {
+        async (call) => {
+          call.addresses({ type: "specification", id: args.specId });
           const res = await client.deleteOpenQuestion(
             args.specId,
             args.questionId,
@@ -1191,6 +1387,7 @@ export function registerWriteTools(
               version: args.version,
               expectedUpdatedAt: args.expectedUpdatedAt,
             },
+            writeOptions(args),
           );
           return ok(res.body);
         },
@@ -1217,20 +1414,26 @@ export function registerWriteTools(
         specificationManagementType: z
           .enum(["free", "web_application"])
           .optional(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
       runTool(
         "create_product",
         { workspaceId: args.workspaceId },
-        async () => {
+        async (call) => {
           const wsId = requireWorkspaceId(config, args.workspaceId);
-          const res = await client.createProduct(wsId, {
-            name: args.name,
-            description: args.description,
-            tags: args.tags,
-            specificationManagementType: args.specificationManagementType,
-          });
+          call.addresses({ type: "workspace", id: wsId });
+          const res = await client.createProduct(
+            wsId,
+            {
+              name: args.name,
+              description: args.description,
+              tags: args.tags,
+              specificationManagementType: args.specificationManagementType,
+            },
+            writeOptions(args),
+          );
           return ok(res.body);
         },
       ),
@@ -1250,15 +1453,21 @@ export function registerWriteTools(
         // Kept for backward compatibility with older callers; the API ignores
         // it because the document is never touched.
         version: z.number().int().min(1).optional(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
-      runTool("append_context", { specId: args.specId }, async () => {
-        const res = await client.appendContext(args.specId, {
-          content: args.content,
-          sectionTitle: args.sectionTitle,
-          version: args.version,
-        });
+      runTool("append_context", { specId: args.specId }, async (call) => {
+        call.addresses({ type: "specification", id: args.specId });
+        const res = await client.appendContext(
+          args.specId,
+          {
+            content: args.content,
+            sectionTitle: args.sectionTitle,
+            version: args.version,
+          },
+          writeOptions(args),
+        );
         return ok(res.body);
       }),
   );
@@ -1338,20 +1547,26 @@ export function registerWriteTools(
         path: z.string().optional(),
         tags: z.array(z.string()).optional(),
         content: z.string().optional(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
       runTool(
         "create_free_specification",
         { productId: args.productId },
-        async () => {
-          const wsId = requireProductId(config, args.productId);
-          const res = await client.createFreeSpecification(wsId, {
-            title: args.title,
-            path: args.path,
-            tags: args.tags,
-            content: args.content,
-          });
+        async (call) => {
+          const productId = requireProductId(config, args.productId);
+          call.addresses({ type: "product", id: productId });
+          const res = await client.createFreeSpecification(
+            productId,
+            {
+              title: args.title,
+              path: args.path,
+              tags: args.tags,
+              content: args.content,
+            },
+            writeOptions(args),
+          );
           return ok(res.body);
         },
       ),
@@ -1382,27 +1597,33 @@ export function registerWriteTools(
         acceptanceCriteria: boardLongText().optional(),
         implementationPrompt: boardPrompt().optional(),
         idempotencyKey: boardIdempotencyKey(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
       runTool(
         "create_board_item",
         { workspaceId: args.workspaceId, type: args.type },
-        async () => {
+        async (call) => {
           const wsId = requireBoardWorkspaceId(config, args.workspaceId);
-          const res = await client.createBoardItem(wsId, {
-            type: args.type,
-            parentId: args.parentId,
-            title: args.title,
-            description: args.description,
-            priority: args.priority,
-            tags: args.tags,
-            assigneeId: args.assigneeId,
-            productId: args.productId,
-            acceptanceCriteria: args.acceptanceCriteria,
-            implementationPrompt: args.implementationPrompt,
-            idempotencyKey: args.idempotencyKey,
-          });
+          call.addresses({ type: "workspace", id: wsId });
+          const res = await client.createBoardItem(
+            wsId,
+            {
+              type: args.type,
+              parentId: args.parentId,
+              title: args.title,
+              description: args.description,
+              priority: args.priority,
+              tags: args.tags,
+              assigneeId: args.assigneeId,
+              productId: args.productId,
+              acceptanceCriteria: args.acceptanceCriteria,
+              implementationPrompt: args.implementationPrompt,
+              idempotencyKey: args.idempotencyKey,
+            },
+            writeOptions(args),
+          );
           return ok(res.body);
         },
       ),
@@ -1427,27 +1648,34 @@ export function registerWriteTools(
         implementationPrompt: boardPrompt().optional(),
         state: boardItemState().optional(),
         parentId: z.string().optional(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
       runTool(
         "update_board_item",
         { workspaceId: args.workspaceId, itemId: args.itemId },
-        async () => {
+        async (call) => {
           const wsId = requireBoardWorkspaceId(config, args.workspaceId);
-          const res = await client.updateBoardItem(wsId, args.itemId, {
-            expectedVersion: args.expectedVersion,
-            title: args.title,
-            description: args.description,
-            priority: args.priority,
-            tags: args.tags,
-            assigneeId: args.assigneeId,
-            productId: args.productId,
-            acceptanceCriteria: args.acceptanceCriteria,
-            implementationPrompt: args.implementationPrompt,
-            state: args.state,
-            parentId: args.parentId,
-          });
+          call.addresses({ type: "workspace", id: wsId });
+          const res = await client.updateBoardItem(
+            wsId,
+            args.itemId,
+            {
+              expectedVersion: args.expectedVersion,
+              title: args.title,
+              description: args.description,
+              priority: args.priority,
+              tags: args.tags,
+              assigneeId: args.assigneeId,
+              productId: args.productId,
+              acceptanceCriteria: args.acceptanceCriteria,
+              implementationPrompt: args.implementationPrompt,
+              state: args.state,
+              parentId: args.parentId,
+            },
+            writeOptions(args),
+          );
           return ok(res.body);
         },
       ),
@@ -1463,6 +1691,7 @@ export function registerWriteTools(
         itemId: z.string(),
         specificationId: z.string(),
         expectedVersion: boardExpectedVersion(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
@@ -1473,12 +1702,18 @@ export function registerWriteTools(
           itemId: args.itemId,
           specId: args.specificationId,
         },
-        async () => {
+        async (call) => {
           const wsId = requireBoardWorkspaceId(config, args.workspaceId);
-          const res = await client.linkBoardSpecification(wsId, args.itemId, {
-            specificationId: args.specificationId,
-            expectedVersion: args.expectedVersion,
-          });
+          call.addresses({ type: "workspace", id: wsId });
+          const res = await client.linkBoardSpecification(
+            wsId,
+            args.itemId,
+            {
+              specificationId: args.specificationId,
+              expectedVersion: args.expectedVersion,
+            },
+            writeOptions(args),
+          );
           return ok(res.body);
         },
       ),
@@ -1494,6 +1729,7 @@ export function registerWriteTools(
         itemId: z.string(),
         specificationId: z.string(),
         expectedVersion: boardExpectedVersion(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
@@ -1504,13 +1740,15 @@ export function registerWriteTools(
           itemId: args.itemId,
           specId: args.specificationId,
         },
-        async () => {
+        async (call) => {
           const wsId = requireBoardWorkspaceId(config, args.workspaceId);
+          call.addresses({ type: "workspace", id: wsId });
           const res = await client.unlinkBoardSpecification(
             wsId,
             args.itemId,
             args.specificationId,
             { expectedVersion: args.expectedVersion },
+            writeOptions(args),
           );
           return ok(res.body);
         },
@@ -1527,18 +1765,22 @@ export function registerWriteTools(
         itemId: z.string(),
         body: z.string().min(1).max(20_000),
         idempotencyKey: boardIdempotencyKey(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
       runTool(
         "append_board_item_note",
         { workspaceId: args.workspaceId, itemId: args.itemId },
-        async () => {
+        async (call) => {
           const wsId = requireBoardWorkspaceId(config, args.workspaceId);
-          const res = await client.appendBoardItemNote(wsId, args.itemId, {
-            body: args.body,
-            idempotencyKey: args.idempotencyKey,
-          });
+          call.addresses({ type: "workspace", id: wsId });
+          const res = await client.appendBoardItemNote(
+            wsId,
+            args.itemId,
+            { body: args.body, idempotencyKey: args.idempotencyKey },
+            writeOptions(args),
+          );
           return ok(res.body);
         },
       ),
@@ -1553,17 +1795,22 @@ export function registerWriteTools(
         workspaceId: boardWorkspaceId(),
         itemId: z.string(),
         expectedVersion: boardExpectedVersion(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
       runTool(
         "archive_board_item",
         { workspaceId: args.workspaceId, itemId: args.itemId },
-        async () => {
+        async (call) => {
           const wsId = requireBoardWorkspaceId(config, args.workspaceId);
-          const res = await client.archiveBoardItem(wsId, args.itemId, {
-            expectedVersion: args.expectedVersion,
-          });
+          call.addresses({ type: "workspace", id: wsId });
+          const res = await client.archiveBoardItem(
+            wsId,
+            args.itemId,
+            { expectedVersion: args.expectedVersion },
+            writeOptions(args),
+          );
           return ok(res.body);
         },
       ),
@@ -1578,17 +1825,22 @@ export function registerWriteTools(
         workspaceId: boardWorkspaceId(),
         itemId: z.string(),
         expectedVersion: boardExpectedVersion(),
+        expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
     async (args) =>
       runTool(
         "restore_board_item",
         { workspaceId: args.workspaceId, itemId: args.itemId },
-        async () => {
+        async (call) => {
           const wsId = requireBoardWorkspaceId(config, args.workspaceId);
-          const res = await client.restoreBoardItem(wsId, args.itemId, {
-            expectedVersion: args.expectedVersion,
-          });
+          call.addresses({ type: "workspace", id: wsId });
+          const res = await client.restoreBoardItem(
+            wsId,
+            args.itemId,
+            { expectedVersion: args.expectedVersion },
+            writeOptions(args),
+          );
           return ok(res.body);
         },
       ),

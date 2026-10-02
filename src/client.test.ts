@@ -501,6 +501,40 @@ describe("KstonebaseClient — open questions", () => {
     }
   });
 
+  it("adds X-Kstonebase-Policy-Revision only when a policy revision is passed (never in the body)", async () => {
+    const { client, call, fetcher } = setup();
+    const revision = "wp1_AbCdEfGhIjKlMnOpQrStUv";
+    await client.createOpenQuestion("s_1", { version: 1, body: "b" }, { policyRevision: revision });
+    await client.updateOpenQuestion(
+      "s_1",
+      "q_1",
+      { version: 1, expectedUpdatedAt: "t", status: "OPEN" },
+      { policyRevision: revision },
+    );
+    await client.deleteOpenQuestion("s_1", "q_1", { version: 1, expectedUpdatedAt: "t" }, { policyRevision: revision });
+    await client.startNewVersion("s_1", { policyRevision: revision });
+    await client.createOpenQuestion("s_1", { version: 1, body: "b" });
+    await client.createOpenQuestion("s_1", { version: 1, body: "b" }, {});
+    expect(fetcher).toHaveBeenCalledTimes(6);
+    for (let i = 0; i < 4; i += 1) {
+      const { headers, rawBody } = call(i);
+      expect(headers["x-kstonebase-policy-revision"]).toBe(revision);
+      expect(
+        Object.keys(headers).every((h) =>
+          ["authorization", "accept", "content-type", "x-kstonebase-policy-revision"].includes(h),
+        ),
+      ).toBe(true);
+      expect(rawBody ?? "").not.toContain(revision);
+    }
+    // start_new_version has no body, so no content-type either.
+    expect(call(3).headers).toEqual({
+      authorization: `Bearer ${TOKEN}`,
+      accept: "application/json",
+      "x-kstonebase-policy-revision": revision,
+    });
+    for (const i of [4, 5]) expect(call(i).headers).not.toHaveProperty("x-kstonebase-policy-revision");
+  });
+
   it("surfaces STALE_QUESTION with its hint and does not retry", async () => {
     const { client, fetcher } = setup({
       status: 409,
@@ -560,5 +594,68 @@ describe("KstonebaseClient — open questions", () => {
     expect(res.body).toEqual(listBody);
     expect(res.body.spec?.version).toBe(13);
     expect(res.body.items[0].resolvedAt).toBeNull();
+  });
+});
+
+describe("KstonebaseClient — effective Workspace instructions", () => {
+  const TOKEN = "kstonebase_pat_POLICYTEST";
+
+  function setup(responses: MockResponseInit[]) {
+    const fetcher = vi.fn<typeof fetch>(async () => mockResponse(responses.shift()));
+    const client = new KstonebaseClient({
+      apiUrl: "https://kstonebase.example",
+      token: TOKEN,
+      fetcher: fetcher as unknown as typeof fetch,
+    });
+    return { fetcher, client };
+  }
+
+  it("GETs /api/mcp/agent-policy with one target per parameter and instructions=omit on request", async () => {
+    const body = { items: [] };
+    const { client, fetcher } = setup([{ body }, { body }]);
+    const res = await client.getAgentPolicy([
+      { type: "workspace", id: "ws_1" },
+      { type: "specification", id: "s:1/x" },
+    ]);
+    expect(res.body).toEqual(body);
+    await client.getAgentPolicy([{ type: "product", id: "p_1" }], { omitInstructions: true });
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      "https://kstonebase.example/api/mcp/agent-policy?target=workspace%3Aws_1&target=specification%3As%3A1%2Fx",
+      "https://kstonebase.example/api/mcp/agent-policy?target=product%3Ap_1&instructions=omit",
+    ]);
+    const [, init] = fetcher.mock.calls[0];
+    expect(init).toEqual({
+      method: "GET",
+      headers: { authorization: `Bearer ${TOKEN}`, accept: "application/json" },
+    });
+  });
+
+  it("throws POLICY_UNSUPPORTED for a 404 without an error code or a non-JSON body", async () => {
+    for (const response of [
+      { status: 404, textBody: "<!doctype html><title>404</title>" },
+      { status: 404, textBody: "" },
+      { status: 404, body: { result: false, message: "Not Found" } },
+      { status: 200, textBody: "<html></html>" },
+    ]) {
+      const { client } = setup([response]);
+      const err = await client.getAgentPolicy([{ type: "workspace", id: "ws_1" }]).catch((e) => e);
+      expect(err).toBeInstanceOf(McpToolError);
+      expect((err as McpToolError).code).toBe("POLICY_UNSUPPORTED");
+      expect((err as McpToolError).message).toBe("This Kstonebase server does not provide Workspace instructions.");
+    }
+  });
+
+  it("maps every other failure as usual", async () => {
+    const { client } = setup([
+      { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } },
+      { status: 422, body: { error: { code: "VALIDATION_ERROR", message: "bad", details: { code: "INVALID_TARGET" } } } },
+      { status: 502, textBody: "<html>Bad gateway</html>" },
+    ]);
+    const codes: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const err = await client.getAgentPolicy([{ type: "workspace", id: "ws_1" }]).catch((e) => e);
+      codes.push((err as McpToolError).code);
+    }
+    expect(codes).toEqual(["NOT_FOUND", "VALIDATION_ERROR", "INTERNAL_ERROR"]);
   });
 });

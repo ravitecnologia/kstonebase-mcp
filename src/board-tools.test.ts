@@ -133,6 +133,15 @@ async function contractSchemas(): Promise<Record<string, any>> {
   const limit = z.number().int().min(1).max(100);
   const cursor = z.string().max(512);
   const tags = z.array(z.string().max(40)).max(20);
+  // Every API write tool's optional policy precondition (MCP ›
+  // features/workspace-agent-instructions.md, frozen contract PBI 176).
+  const policyRevision = z
+    .string()
+    .regex(/^wp1_[A-Za-z0-9_-]{22}$/)
+    .optional()
+    .describe(
+      "Policy revision from the latest Kstonebase Workspace instructions notice for this resource (wp1_…). Required by Workspaces that enforce their instructions; a changed policy answers POLICY_STALE.",
+    );
   const shapes: Record<string, z.ZodRawShape> = {
     read_board: { workspaceId: ws },
     list_board_items: {
@@ -169,6 +178,7 @@ async function contractSchemas(): Promise<Record<string, any>> {
       acceptanceCriteria: z.string().max(20000).optional(),
       implementationPrompt: z.string().max(40000).optional(),
       idempotencyKey: key,
+      expectedPolicyRevision: policyRevision,
     },
     update_board_item: {
       workspaceId: ws,
@@ -184,27 +194,31 @@ async function contractSchemas(): Promise<Record<string, any>> {
       implementationPrompt: z.string().max(40000).optional(),
       state: state.optional(),
       parentId: z.string().optional(),
+      expectedPolicyRevision: policyRevision,
     },
     link_board_specification: {
       workspaceId: ws,
       itemId: z.string(),
       specificationId: z.string(),
       expectedVersion: version,
+      expectedPolicyRevision: policyRevision,
     },
     unlink_board_specification: {
       workspaceId: ws,
       itemId: z.string(),
       specificationId: z.string(),
       expectedVersion: version,
+      expectedPolicyRevision: policyRevision,
     },
     append_board_item_note: {
       workspaceId: ws,
       itemId: z.string(),
       body: z.string().min(1).max(20000),
       idempotencyKey: key,
+      expectedPolicyRevision: policyRevision,
     },
-    archive_board_item: { workspaceId: ws, itemId: z.string(), expectedVersion: version },
-    restore_board_item: { workspaceId: ws, itemId: z.string(), expectedVersion: version },
+    archive_board_item: { workspaceId: ws, itemId: z.string(), expectedVersion: version, expectedPolicyRevision: policyRevision },
+    restore_board_item: { workspaceId: ws, itemId: z.string(), expectedVersion: version, expectedPolicyRevision: policyRevision },
     list_board_imports: { workspaceId: ws, limit: limit.optional(), cursor: cursor.optional() },
     read_board_import: {
       workspaceId: ws,
@@ -481,9 +495,39 @@ interface SentRequest {
 
 type Reply = { status: number; json?: unknown; raw?: string };
 
+/**
+ * The policy resolver (`GET /api/mcp/agent-policy`) answers Local mode for
+ * every target. Scoped results call it after each successful tool call (MCP ›
+ * features/workspace-agent-instructions.md, frozen contract PBI 176); those
+ * calls are recorded apart, in `policySent`, so `sent` keeps only the Board
+ * routes. The notices themselves are covered by policy-tools.test.ts.
+ */
+function localPolicy(url: URL): Reply {
+  return {
+    status: 200,
+    json: {
+      items: url.searchParams.getAll("target").map((t) => {
+        const [type, ...rest] = t.split(":");
+        return {
+          target: { type, id: rest.join(":") },
+          policy: {
+            schemaVersion: 1,
+            mode: "local",
+            source: "workspace_local",
+            policyRevision: "wp1_AAAAAAAAAAAAAAAAAAAAAA",
+            instructions: null,
+            instructionsOmitted: false,
+          },
+        };
+      }),
+    },
+  };
+}
+
 /** A recording fetch stub; `reply` decides each response from the request. */
 function recorder(reply: (req: SentRequest) => Reply) {
   const sent: SentRequest[] = [];
+  const policySent: SentRequest[] = [];
   const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const headers: Record<string, string> = {};
@@ -498,14 +542,15 @@ function recorder(reply: (req: SentRequest) => Reply) {
       headers,
       body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
     };
-    sent.push(req);
-    const r = reply(req);
+    const isPolicy = req.method === "GET" && req.path === "/api/mcp/agent-policy";
+    (isPolicy ? policySent : sent).push(req);
+    const r = isPolicy ? localPolicy(url) : reply(req);
     return new Response(r.raw ?? JSON.stringify(r.json), {
       status: r.status,
       headers: { "content-type": r.raw ? "text/html" : "application/json" },
     });
   });
-  return { sent, fetcher: fetcher as unknown as typeof fetch };
+  return { sent, policySent, fetcher: fetcher as unknown as typeof fetch };
 }
 
 /** Success replies by route, as the API sends them. */
@@ -965,6 +1010,10 @@ describe("Board tools — forwarding", () => {
       ["read_board", { workspaceId: "" }],
       ["read_board", { workspaceId: "w".repeat(65) }],
       ["archive_board_item", { itemId: "bi_3", expectedVersion: 1.5 }],
+      // expectedPolicyRevision must be wp1_ + 22 base64url characters.
+      ["update_board_item", { itemId: "bi_3", expectedVersion: 4, expectedPolicyRevision: "wp1_short" }],
+      ["create_board_item", { type: "epic", title: "x", idempotencyKey: "valid-key-1", expectedPolicyRevision: "wp2_AAAAAAAAAAAAAAAAAAAAAA" }],
+      ["archive_board_item", { itemId: "bi_3", expectedVersion: 4, expectedPolicyRevision: "wp1_AAAAAAAAAAAAAAAAAAAAA=" }],
     ];
     for (const [name, args] of bad) {
       const out = await call(mcp, name, args);

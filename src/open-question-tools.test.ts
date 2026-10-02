@@ -459,9 +459,38 @@ class FakeKstonebaseApi {
   }
 }
 
+/**
+ * Local-mode answer of the policy resolver (`GET /api/mcp/agent-policy`),
+ * which scoped results call after each successful tool call (MCP ›
+ * features/workspace-agent-instructions.md, frozen contract PBI 176). It is
+ * kept out of `api.requests` so the open-question request logs stay exact;
+ * the notices are covered by policy-tools.test.ts.
+ */
+function localPolicyResponse(url: URL): Response {
+  const items = url.searchParams.getAll("target").map((t) => {
+    const [type, ...rest] = t.split(":");
+    return {
+      target: { type, id: rest.join(":") },
+      policy: {
+        schemaVersion: 1,
+        mode: "local",
+        source: "workspace_local",
+        policyRevision: "wp1_AAAAAAAAAAAAAAAAAAAAAA",
+        instructions: null,
+        instructionsOmitted: false,
+      },
+    };
+  });
+  return new Response(JSON.stringify({ items }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 function fetcherFor(api: FakeKstonebaseApi): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if (url.pathname === "/api/mcp/agent-policy") return localPolicyResponse(url);
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
       headers[k.toLowerCase()] = v;
@@ -606,6 +635,15 @@ const CONTRACT_ANNOTATIONS: Record<string, Record<string, boolean>> = {
 // comparison is against the SDK's own JSON Schema rendering of them.
 async function contractSchemas(): Promise<Record<string, unknown>> {
   const reference = new McpServer({ name: "contract", version: "0" }, { capabilities: { tools: {} } });
+  // The optional policy precondition every API write tool gained (MCP ›
+  // features/workspace-agent-instructions.md, frozen contract PBI 176).
+  const policyRevision = z
+    .string()
+    .regex(/^wp1_[A-Za-z0-9_-]{22}$/)
+    .optional()
+    .describe(
+      "Policy revision from the latest Kstonebase Workspace instructions notice for this resource (wp1_…). Required by Workspaces that enforce their instructions; a changed policy answers POLICY_STALE.",
+    );
   const shapes: Record<string, z.ZodRawShape> = {
     read_open_question: { specId: z.string(), questionId: z.string() },
     create_open_question: {
@@ -614,6 +652,7 @@ async function contractSchemas(): Promise<Record<string, unknown>> {
       body: z.string(),
       kind: z.enum(["QUESTION", "ASSUMPTION"]).optional(),
       sectionPath: z.string().nullable().optional(),
+      expectedPolicyRevision: policyRevision,
     },
     update_open_question: {
       specId: z.string(),
@@ -624,12 +663,14 @@ async function contractSchemas(): Promise<Record<string, unknown>> {
       sectionPath: z.string().nullable().optional(),
       answer: z.string().nullable().optional(),
       status: z.enum(["OPEN", "RESOLVED", "DISMISSED"]).optional(),
+      expectedPolicyRevision: policyRevision,
     },
     delete_open_question: {
       specId: z.string(),
       questionId: z.string(),
       version: z.number().int(),
       expectedUpdatedAt: z.string(),
+      expectedPolicyRevision: policyRevision,
     },
   };
   for (const [name, inputSchema] of Object.entries(shapes)) {
@@ -723,6 +764,7 @@ describe("open-question tools — discovery", () => {
         "delete_open_question",
         "discard_draft",
         "find_product_by_subject",
+        "get_effective_instructions",
         "init_product",
         "init_workspace",
         "link_board_specification",

@@ -1,5 +1,6 @@
 // MCP-side error mapping (per Kstonebase spec "mcp-server" §5 "Error mapping",
-// "mcp-open-question-management" §6 and "mcp-board-tools" §2.1). Translates
+// "mcp-open-question-management" §6, "mcp-board-tools" §2.1 and
+// "workspace-agent-instructions" (frozen contract, PBI 176)). Translates
 // Kstonebase API error envelopes into MCP error codes the agent can reason
 // about, each carrying a short remediation string plus the API's actionable
 // details.
@@ -50,7 +51,14 @@ export type McpStructuredCode =
   | "LINK_LIMIT_REACHED"
   // Board import report code (API › features/azure-devops-board-import.md
   // §8.3; the MCP surface only exposes the report reads).
-  | "IMPORT_NOT_FOUND";
+  | "IMPORT_NOT_FOUND"
+  // Effective Workspace instructions (MCP › features/workspace-agent-
+  // instructions.md, frozen contract PBI 176; API frozen contract PBI 174).
+  | "POLICY_STALE"
+  | "POLICY_REVISION_REQUIRED"
+  | "INVALID_POLICY_REVISION"
+  | "POLICY_TARGET_REQUIRED"
+  | "POLICY_UNSUPPORTED";
 
 export interface ApiErrorBody {
   error?: {
@@ -227,6 +235,18 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
     "The work item already links the maximum number of specifications (details.limit). Unlink one with unlink_board_specification before linking another.",
   IMPORT_NOT_FOUND:
     "No such import on this Workspace's Board. Use an id returned by list_board_imports for this same Workspace; never guess ids. Tools cannot start an import: a person connects Azure DevOps in Workspace Settings → General → Azure DevOps, then previews and confirms it with Import from Azure DevOps on the Board.",
+  // Workspace instructions (frozen contract PBI 176): the same text in the
+  // default and Board modes, and on the Kstonebase-hosted endpoint.
+  POLICY_STALE:
+    "The Workspace agent instructions changed. Call get_effective_instructions for this resource, review the new instructions with the user, then retry with the new expectedPolicyRevision. Never replay the write automatically.",
+  POLICY_REVISION_REQUIRED:
+    "This Workspace enforces its agent instructions. Call get_effective_instructions for this resource, follow the instructions, and pass its policyRevision as expectedPolicyRevision.",
+  INVALID_POLICY_REVISION:
+    "Pass the policyRevision exactly as returned by get_effective_instructions (wp1_…).",
+  POLICY_TARGET_REQUIRED:
+    "Pass exactly one of workspaceId, productId or specificationId.",
+  POLICY_UNSUPPORTED:
+    "This Kstonebase server cannot provide Workspace instructions. Do not assume Local mode; ask the user before acting on Workspace resources.",
 };
 
 // Board-specific wording for shared codes (MCP › mcp-board-tools.md §2.1,
@@ -270,6 +290,19 @@ const SECTION_MISSING =
 const SECTION_ANCHOR_STALE =
   "The heading this item was recorded under no longer exists (details.reason ANCHOR_STALE), so it cannot be reopened in place and nothing was changed. Re-read the specification and follow the hint: restore the heading, or record the item again with create_open_question.";
 
+// Workspace-instruction codes (API frozen contract PBI 174): 409 CONFLICT +
+// POLICY_STALE, 428 PRECONDITION_REQUIRED + POLICY_REVISION_REQUIRED and 422
+// VALIDATION_ERROR + INVALID_POLICY_REVISION arrive in `details.code`, on
+// every write route (specification, question, Product and Board writes), so
+// they are read first in the default mode and in both Board modes.
+const POLICY_CODES: Readonly<Record<string, McpStructuredCode>> = {
+  POLICY_STALE: "POLICY_STALE",
+  POLICY_REVISION_REQUIRED: "POLICY_REVISION_REQUIRED",
+  INVALID_POLICY_REVISION: "INVALID_POLICY_REVISION",
+  POLICY_TARGET_REQUIRED: "POLICY_TARGET_REQUIRED",
+  POLICY_UNSUPPORTED: "POLICY_UNSUPPORTED",
+};
+
 // Specification and question codes. The API sends them in `details.code`
 // under a generic envelope (CONFLICT, BAD_REQUEST, NOT_FOUND, SPEC_LOCKED…),
 // so `details.code` is consulted first for these.
@@ -286,6 +319,7 @@ const DETAIL_FIRST_CODES: Readonly<Record<string, McpStructuredCode>> = {
   SECTION_AMBIGUOUS: "SECTION_AMBIGUOUS",
   ANSWER_REQUIRED: "ANSWER_REQUIRED",
   INVALID_TRANSITION: "INVALID_TRANSITION",
+  ...POLICY_CODES,
 };
 
 // Credential, scope and binding codes keep the pre-2.2.0 resolution, per
@@ -376,6 +410,7 @@ const BOARD_DETAIL_CODES: Readonly<Record<string, McpStructuredCode>> = {
   TOKEN_REVOKED: "TOKEN_REVOKED",
   RATE_LIMITED: "RATE_LIMITED",
   INTERNAL_ERROR: "INTERNAL_ERROR",
+  ...POLICY_CODES,
 };
 
 /**
@@ -534,4 +569,9 @@ function remediationFor(
 
 export function buildClientFailure(code: McpStructuredCode, message: string): McpFailure {
   return { code, message, remediation: REMEDIATIONS[code] };
+}
+
+/** A locally raised tool error carrying the code's default remediation. */
+export function toolError(code: McpStructuredCode, message: string): McpToolError {
+  return new McpToolError(code, message, REMEDIATIONS[code]);
 }

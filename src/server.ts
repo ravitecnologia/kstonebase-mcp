@@ -9,6 +9,7 @@ import { KstonebaseClient } from "./client.js";
 import type { ResolvedConfig } from "./config.js";
 import { McpToolError } from "./errors.js";
 import { logger } from "./logger.js";
+import { PolicyNotices, SERVER_INSTRUCTIONS } from "./policy.js";
 import { registerReadTools, registerWriteTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 
@@ -37,6 +38,9 @@ export function buildServer(options: BuildServerOptions): McpServer {
         resources: {},
         logging: {},
       },
+      // Same string on every transport (MCP › features/workspace-agent-
+      // instructions.md, frozen contract PBI 176, decision M5).
+      instructions: SERVER_INSTRUCTIONS,
     },
   );
 
@@ -44,8 +48,10 @@ export function buildServer(options: BuildServerOptions): McpServer {
     options.client ??
     new KstonebaseClient({ apiUrl: config.apiUrl, token: config.token });
 
-  registerReadTools(server, { client, config });
-  registerWriteTools(server, { client, config });
+  // One policy-notice builder per server: one credential, one text cache.
+  const policy = new PolicyNotices(client);
+  registerReadTools(server, { client, config, policy });
+  registerWriteTools(server, { client, config, policy });
   registerResources(server, { client, config });
 
   return server;
