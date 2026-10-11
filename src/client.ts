@@ -762,6 +762,25 @@ export class KstonebaseClient {
     );
   }
 
+  // ────────────────────────────────────────────────────────────────────
+  // Engineering tools (MCP › mcp-engineering-tools.md, PBI 230). The shared
+  // catalog builds the API `/mcp/…` request; the Website proxies it under
+  // `/api/mcp/…`. Every one of them reads (the assessment POST included),
+  // so no policy precondition is ever sent. Errors map in "engineering"
+  // mode (ME6).
+  // ────────────────────────────────────────────────────────────────────
+
+  /** One engineering read: GET, or the read-only assessment POST. */
+  engineeringRequest(
+    method: "GET" | "POST",
+    mcpPath: string,
+    body?: Record<string, unknown>,
+  ): Promise<ApiResponse<unknown>> {
+    const path = `/api${mcpPath}`;
+    if (method === "GET") return this.getJson(path, "engineering");
+    return this.sendJson("POST", path, body, "engineering");
+  }
+
   /** Convenience for endpoints that never send If-None-Match — narrows the
    *  union so callers don't have to discriminate on `notModified`. The body
    *  type is the documented API shape; it is not validated at runtime. */

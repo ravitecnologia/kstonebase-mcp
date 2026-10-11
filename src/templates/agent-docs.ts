@@ -4,6 +4,8 @@
 // purpose: users append their own project-specific guidance after the
 // generated body.
 
+import { ENGINEERING_TOOL_NAMES } from "../engineering-catalog.js";
+
 export type SpecManagementType = "free" | "web_application";
 
 export interface AgentDocsBinding {
@@ -209,6 +211,10 @@ export function buildToolInventory(binding: AgentDocsBinding): ToolInventory {
     reads.push(...BOARD_READ_TOOLS);
     writes.push(...BOARD_WRITE_TOOLS);
   }
+  // Engineering discovery, read and assessment tools (MCP spec
+  // "mcp-engineering-tools", PBI 230): reads only, for every binding shape;
+  // they need a credential with engineering access.
+  reads.push(...ENGINEERING_TOOL_NAMES);
   return { reads, writes };
 }
 

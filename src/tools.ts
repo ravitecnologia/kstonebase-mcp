@@ -406,13 +406,13 @@ function resolveSearchSpecificationsTarget(
 // CallToolResult-shaped envelopes. The SDK's typings expect an open-ended
 // record with a string index signature, so we use Record<string, unknown>
 // rather than a closed interface.
-type ToolResult = {
+export type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
   structuredContent?: Record<string, unknown>;
 } & Record<string, unknown>;
 
-function ok(data: unknown): ToolResult {
+export function ok(data: unknown): ToolResult {
   return {
     content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
     structuredContent:
@@ -437,14 +437,14 @@ function fail(failure: McpFailure): ToolResult {
 }
 
 /** Lets a tool body declare what its call addresses, for the policy notice. */
-interface ToolCall {
+export interface ToolCall {
   /** The Workspace, Product or specification this call addresses. */
   addresses(target: PolicyTarget, resolved?: PolicyOutcome): void;
   /** The results span several Workspaces or standalone Products. */
   spansScopes(): void;
 }
 
-type ToolBody = (call: ToolCall) => Promise<ToolResult>;
+export type ToolBody = (call: ToolCall) => Promise<ToolResult>;
 
 /**
  * Build the per-server tool runner. It wraps an async tool body so any thrown
@@ -454,7 +454,7 @@ type ToolBody = (call: ToolCall) => Promise<ToolResult>;
  * durationMs / errorCode` shape. A successful result whose body declared a
  * scope gets its policy notice appended (failed results never do).
  */
-function createToolRunner(policy: PolicyNotices) {
+export function createToolRunner(policy: PolicyNotices) {
   return async function runTool(
     name: string,
     context: Record<string, unknown>,

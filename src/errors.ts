@@ -1,9 +1,16 @@
 // MCP-side error mapping (per Kstonebase spec "mcp-server" §5 "Error mapping",
-// "mcp-open-question-management" §6, "mcp-board-tools" §2.1 and
-// "workspace-agent-instructions" (frozen contract, PBI 176)). Translates
+// "mcp-open-question-management" §6, "mcp-board-tools" §2.1,
+// "workspace-agent-instructions" (frozen contract, PBI 176) and
+// "mcp-engineering-tools" ME6 (PBI 230)). Translates
 // Kstonebase API error envelopes into MCP error codes the agent can reason
 // about, each carrying a short remediation string plus the API's actionable
 // details.
+
+import {
+  ENGINEERING_DETAIL_KEYS,
+  ENGINEERING_ERROR_CODES,
+  engineeringRemediation,
+} from "./engineering-catalog.js";
 
 export type McpStructuredCode =
   | "AUTH_FAILED"
@@ -58,7 +65,33 @@ export type McpStructuredCode =
   | "POLICY_REVISION_REQUIRED"
   | "INVALID_POLICY_REVISION"
   | "POLICY_TARGET_REQUIRED"
-  | "POLICY_UNSUPPORTED";
+  | "POLICY_UNSUPPORTED"
+  // Engineering tools (MCP › mcp-engineering-tools.md ME6; API ›
+  // agent-engineering-contract.md §3.3 and AE-I31). ENGINEERING_UNSUPPORTED
+  // is raised here for a server without the engineering routes.
+  | "ENGINEERING_UNSUPPORTED"
+  | "ENGINEERING_UNAVAILABLE"
+  | "ENGINEERING_DELEGATION_REQUIRED"
+  | "ENGINEERING_CONSENT_REQUIRED"
+  | "PROVIDER_CONSENT_REQUIRED"
+  | "PROVIDER_PERMISSION_INSUFFICIENT"
+  | "NOT_ALLOWED_BY_POLICY"
+  | "PROVIDER_FEATURE_UNSUPPORTED"
+  | "PROVIDER_RATE_LIMITED"
+  | "PROVIDER_UNAVAILABLE"
+  | "REPOSITORY_NOT_CONFIGURED"
+  | "DELIVERY_NOT_CONFIGURED"
+  | "REPOSITORY_CHANGED"
+  | "REPOSITORY_ACCESS_DENIED"
+  | "CONNECTION_REQUIRED"
+  | "REVISION_NOT_FOUND"
+  | "PATH_NOT_FOUND"
+  | "PULL_REQUEST_NOT_FOUND"
+  | "CI_RUN_NOT_FOUND"
+  | "ENVIRONMENT_NOT_FOUND"
+  | "STAGE_NOT_FOUND"
+  | "PRODUCT_NOT_FOUND"
+  | "PRODUCT_ARCHIVED";
 
 export interface ApiErrorBody {
   error?: {
@@ -101,8 +134,11 @@ const BOARD_DETAIL_KEYS = [
 
 export type BoardDetailKey = (typeof BOARD_DETAIL_KEYS)[number];
 
+/** The `error.details` keys an engineering tool passes on (ME6). */
+export type EngineeringDetailKey = (typeof ENGINEERING_DETAIL_KEYS)[number];
+
 export type McpFailureDetails = Partial<
-  Record<ActionableDetailKey | BoardDetailKey, unknown>
+  Record<ActionableDetailKey | BoardDetailKey | EngineeringDetailKey, unknown>
 >;
 
 /**
@@ -111,10 +147,13 @@ export type McpFailureDetails = Partial<
  * codes included (MCP › mcp-board-tools.md §2.1), and Board remediations and
  * details apply. "board-import" is the same mapping for the Board import
  * report reads (list_board_imports, read_board_import; spec §2.2), with
- * remediations worded for Owner-only reports. "default" keeps the existing
- * vocabulary for every other tool.
+ * remediations worded for Owner-only reports. "engineering" is used by the
+ * engineering tools (MCP › mcp-engineering-tools.md ME6): the API's
+ * `details.code` is the tool code and the engineering remediations and
+ * details apply. "default" keeps the existing vocabulary for every other
+ * tool.
  */
-export type ErrorMappingMode = "default" | "board" | "board-import";
+export type ErrorMappingMode = "default" | "board" | "board-import" | "engineering";
 
 export interface McpFailure {
   code: McpStructuredCode;
@@ -146,6 +185,11 @@ export class McpToolError extends Error {
     }
     return failure;
   }
+}
+
+/** The catalog remediation of an engineering code without details. */
+function engineeringText(code: McpStructuredCode): string {
+  return engineeringRemediation(code) ?? "";
 }
 
 const REMEDIATIONS: Record<McpStructuredCode, string> = {
@@ -247,6 +291,31 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
     "Pass exactly one of workspaceId, productId or specificationId.",
   POLICY_UNSUPPORTED:
     "This Kstonebase server cannot provide Workspace instructions. Do not assume Local mode; ask the user before acting on Workspace resources.",
+  // Engineering tools: the shared catalog text (ME6), identical on every
+  // transport. Codes reached only by engineering tools.
+  ENGINEERING_UNSUPPORTED: engineeringText("ENGINEERING_UNSUPPORTED"),
+  ENGINEERING_UNAVAILABLE: engineeringText("ENGINEERING_UNAVAILABLE"),
+  ENGINEERING_DELEGATION_REQUIRED: engineeringText("ENGINEERING_DELEGATION_REQUIRED"),
+  ENGINEERING_CONSENT_REQUIRED: engineeringText("ENGINEERING_CONSENT_REQUIRED"),
+  PROVIDER_CONSENT_REQUIRED: engineeringText("PROVIDER_CONSENT_REQUIRED"),
+  PROVIDER_PERMISSION_INSUFFICIENT: engineeringText("PROVIDER_PERMISSION_INSUFFICIENT"),
+  NOT_ALLOWED_BY_POLICY: engineeringText("NOT_ALLOWED_BY_POLICY"),
+  PROVIDER_FEATURE_UNSUPPORTED: engineeringText("PROVIDER_FEATURE_UNSUPPORTED"),
+  PROVIDER_RATE_LIMITED: engineeringText("PROVIDER_RATE_LIMITED"),
+  PROVIDER_UNAVAILABLE: engineeringText("PROVIDER_UNAVAILABLE"),
+  REPOSITORY_NOT_CONFIGURED: engineeringText("REPOSITORY_NOT_CONFIGURED"),
+  DELIVERY_NOT_CONFIGURED: engineeringText("DELIVERY_NOT_CONFIGURED"),
+  REPOSITORY_CHANGED: engineeringText("REPOSITORY_CHANGED"),
+  REPOSITORY_ACCESS_DENIED: engineeringText("REPOSITORY_ACCESS_DENIED"),
+  CONNECTION_REQUIRED: engineeringText("CONNECTION_REQUIRED"),
+  REVISION_NOT_FOUND: engineeringText("REVISION_NOT_FOUND"),
+  PATH_NOT_FOUND: engineeringText("PATH_NOT_FOUND"),
+  PULL_REQUEST_NOT_FOUND: engineeringText("PULL_REQUEST_NOT_FOUND"),
+  CI_RUN_NOT_FOUND: engineeringText("CI_RUN_NOT_FOUND"),
+  ENVIRONMENT_NOT_FOUND: engineeringText("ENVIRONMENT_NOT_FOUND"),
+  STAGE_NOT_FOUND: engineeringText("STAGE_NOT_FOUND"),
+  PRODUCT_NOT_FOUND: engineeringText("PRODUCT_NOT_FOUND"),
+  PRODUCT_ARCHIVED: engineeringText("PRODUCT_ARCHIVED"),
 };
 
 // Board-specific wording for shared codes (MCP › mcp-board-tools.md §2.1,
@@ -365,14 +434,47 @@ const BOARD_IMPORT_REMEDIATIONS: Partial<Record<McpStructuredCode, string>> = {
     "The Kstonebase API hit an unexpected error. Import report reads change nothing, so retry the read once; if it persists, contact support.",
 };
 
-/** The remediation a Board tool (or, in "board-import" mode, an import report tool) reports for `code`. */
+/** The remediation a Board tool (or, in "board-import" mode, an import report tool; in "engineering" mode, an engineering tool) reports for `code`. */
 export function boardRemediation(
   code: McpStructuredCode,
   mode: ErrorMappingMode = "board",
 ): string {
+  if (mode === "engineering") {
+    return engineeringRemediation(code) ?? REMEDIATIONS[code];
+  }
   const forImport =
     mode === "board-import" ? BOARD_IMPORT_REMEDIATIONS[code] : undefined;
   return forImport ?? BOARD_REMEDIATIONS[code] ?? REMEDIATIONS[code];
+}
+
+// Engineering refusals carry their specific code in `details.code` under the
+// status envelope (BAD_REQUEST, FORBIDDEN, NOT_FOUND, CONFLICT,
+// UNPROCESSABLE_ENTITY, RATE_LIMITED, BAD_GATEWAY…). In "engineering" mode
+// that code is the tool error code (ME6), credential refusals included.
+const ENGINEERING_DETAIL_CODES: Readonly<Record<string, McpStructuredCode>> = {
+  ...Object.fromEntries(
+    [...ENGINEERING_ERROR_CODES].map((code) => [code, code as McpStructuredCode]),
+  ),
+  AUTH_REQUIRED: "AUTH_FAILED",
+  AUTH_FAILED: "AUTH_FAILED",
+  TOKEN_EXPIRED: "TOKEN_EXPIRED",
+  TOKEN_REVOKED: "TOKEN_REVOKED",
+  INTERNAL_ERROR: "INTERNAL_ERROR",
+  ...POLICY_CODES,
+};
+
+function pickEngineeringCode(
+  status: number,
+  apiCode: string | undefined,
+  detailCode: string | undefined,
+): McpStructuredCode {
+  const specific =
+    lookupCode(ENGINEERING_DETAIL_CODES, detailCode) ??
+    lookupCode(ENGINEERING_DETAIL_CODES, apiCode);
+  if (specific) return specific;
+  if (status === 400) return "VALIDATION_ERROR";
+  if (status === 502 || status === 503 || status === 504) return "PROVIDER_UNAVAILABLE";
+  return pickStructuredCode(status, apiCode, detailCode).code;
 }
 
 // Board refusals carry their specific code in `details.code` under a generic
@@ -437,6 +539,24 @@ export function mapApiError(
     body?.error?.message ?? `Request failed with status ${status}.`;
   const rawDetails = body?.error?.details;
   const detailCode = extractDetailCode(rawDetails);
+  if (mode === "engineering") {
+    // A server without the engineering routes answers a 404 without any
+    // Kstonebase error code (ME1): nothing was verified.
+    const unsupported =
+      apiCode === undefined && detailCode === undefined && status === 404;
+    const code = unsupported
+      ? "ENGINEERING_UNSUPPORTED"
+      : pickEngineeringCode(status, apiCode, detailCode);
+    const details = pickDetails(rawDetails, ENGINEERING_DETAIL_KEYS);
+    return new McpToolError(
+      code,
+      unsupported
+        ? "This Kstonebase server does not provide the engineering tools."
+        : apiMessage,
+      engineeringRemediation(code, details) ?? REMEDIATIONS[code],
+      details,
+    );
+  }
   if (mode === "board" || mode === "board-import") {
     const { code } = pickBoardCode(status, apiCode, detailCode);
     const details = pickDetails(rawDetails, BOARD_DETAIL_KEYS);
@@ -532,7 +652,7 @@ function extractDetailCode(details: unknown): string | undefined {
 
 function pickDetails(
   details: unknown,
-  keys: readonly (ActionableDetailKey | BoardDetailKey)[],
+  keys: readonly (ActionableDetailKey | BoardDetailKey | EngineeringDetailKey)[],
 ): McpFailureDetails | undefined {
   if (!details || typeof details !== "object" || Array.isArray(details)) {
     return undefined;

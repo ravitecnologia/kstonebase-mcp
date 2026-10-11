@@ -342,7 +342,8 @@ describe("get_effective_instructions — discovery", () => {
     const { fetcher } = stubApi();
     const { mcp, close } = await connect(fetcher);
     const { tools } = await mcp.listTools();
-    expect(tools).toHaveLength(41);
+    // 41 tools, plus the 20 engineering reads of PBI 230 (never writes).
+    expect(tools).toHaveLength(61);
     for (const tool of tools) {
       const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
       if (WRITE_TOOLS.includes(tool.name)) {

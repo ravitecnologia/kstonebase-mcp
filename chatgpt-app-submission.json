@@ -476,6 +476,266 @@
         "open_world_justification": "Only reads a private Kstonebase import report; it never contacts Azure DevOps or any other external service and does not publish data outward.",
         "destructive_justification": "Does not change the mapping, confirm, cancel or retry the import, and does not create, change or delete any work item or specification."
       }
+    },
+    "get_engineering_capabilities": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "list_engineering_repositories": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Only reads private Kstonebase records; it makes no provider call and does not publish data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "read_delivery_configuration": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Only reads private Kstonebase records; it makes no provider call and does not publish data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "read_workspace_delivery_policy": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Only reads private Kstonebase records; it makes no provider call and does not publish data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "resolve_revision": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "read_repository_tree": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "read_repository_file": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "search_repository_code": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "compare_revisions": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "list_commits": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "list_pull_requests": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "read_pull_request": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "read_revision_checks": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "list_ci_runs": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "read_ci_run": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "list_deployments": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "read_active_deployment": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "list_engineering_links": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Only reads private Kstonebase records; it makes no provider call and does not publish data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "discover_engineering_links": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads engineering evidence or settings and returns it; it creates, changes or deletes nothing in Kstonebase or in any repository, CI or deployment provider.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "assess_board_items": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Computes a read-only assessment of Board PBIs against live delivery evidence; it adds no note, link or state change, and the result is kept 30 minutes for its author only.",
+        "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
     }
   },
   "test_cases": [

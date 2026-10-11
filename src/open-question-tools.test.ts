@@ -16,6 +16,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { KstonebaseClient } from "./client.js";
 import type { ResolvedConfig } from "./config.js";
+import { ENGINEERING_TOOL_NAMES } from "./engineering-catalog.js";
 import { buildServer } from "./server.js";
 
 const TOKEN = "kstonebase_pat_OQ_TOOL_TEST";
@@ -795,6 +796,8 @@ describe("open-question tools — discovery", () => {
         "update_open_question",
         "update_specification_content",
         "update_specification_section",
+        // Engineering discovery, read and assessment tools (PBI 230).
+        ...ENGINEERING_TOOL_NAMES,
       ].sort(),
     );
     await close();
