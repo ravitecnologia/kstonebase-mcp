@@ -10,11 +10,12 @@ import type { ResolvedConfig } from "./config.js";
 import { McpToolError } from "./errors.js";
 import { logger } from "./logger.js";
 import { PolicyNotices, SERVER_INSTRUCTIONS } from "./policy.js";
+import { registerEngineeringTools } from "./engineering-tools.js";
 import { registerReadTools, registerWriteTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 
 const SERVER_NAME = "@ravitecnologia/kstonebase-mcp";
-const SERVER_VERSION = "2.2.0";
+const SERVER_VERSION = "2.7.0";
 
 export interface BuildServerOptions {
   config: ResolvedConfig;
@@ -52,6 +53,9 @@ export function buildServer(options: BuildServerOptions): McpServer {
   const policy = new PolicyNotices(client);
   registerReadTools(server, { client, config, policy });
   registerWriteTools(server, { client, config, policy });
+  // Engineering discovery, read and assessment tools (PBI 230), after the
+  // existing tools so their order on every transport is unchanged.
+  registerEngineeringTools(server, { client, config, policy });
   registerResources(server, { client, config });
 
   return server;

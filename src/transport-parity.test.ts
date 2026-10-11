@@ -166,7 +166,7 @@ function agentPolicy(path: string): { status: number; json: unknown } {
         policy: omit ? { ...WS_POLICY, instructions: null, instructionsOmitted: true } : WS_POLICY,
       };
     }
-    if (t === "specification:s_1") return { target, policy: SPEC_POLICY };
+    if (t === "specification:s_1" || t === "product:p_1") return { target, policy: SPEC_POLICY };
     return { target, error: { code: "NOT_FOUND" } };
   });
   return { status: 200, json: { items } };
@@ -183,8 +183,33 @@ interface SeenRequest {
   body: unknown;
 }
 
-function route(method: string, path: string): { status: number; json: unknown } {
+// Engineering tools (MCP › mcp-engineering-tools.md, PBI 230).
+const SHA = "c".repeat(40);
+const RESOLVED_FIXTURE = {
+  ref: "main",
+  kind: "branch",
+  sha: SHA,
+  provenance: { provider: "github", fetchedAt: "2026-10-11T12:00:00Z", partial: false, truncated: false, omissions: [], redactions: 0 },
+};
+const ASSESSMENT_FIXTURE = { computedAt: "2026-10-11T12:00:00Z", items: [], failures: [{ itemId: "bi_1", code: "NOT_A_PBI", reason: null }], complete: true };
+const DELEGATION_ERROR = {
+  error: {
+    code: "FORBIDDEN",
+    message: "This agent has no engineering access.",
+    details: { code: "ENGINEERING_DELEGATION_REQUIRED", source: "pat", required: "read", hint: "Grant engineering access to this agent in Kstonebase › Settings › AI Agent access, or use a token or connector with engineering access." },
+  },
+};
+
+function route(method: string, path: string): { status: number; json?: unknown; raw?: string } {
   if (method === "GET" && path.startsWith("/api/mcp/agent-policy?")) return agentPolicy(path);
+  const product = "/api/mcp/products/p_1/engineering";
+  if (method === "GET" && path === `${product}/revisions/resolve?ref=main`) return { status: 200, json: RESOLVED_FIXTURE };
+  if (method === "GET" && path === `${product}/ci/runs`) return { status: 403, json: DELEGATION_ERROR };
+  if (method === "POST" && path === "/api/mcp/workspaces/ws_1/board/engineering/assessments") {
+    return { status: 200, json: ASSESSMENT_FIXTURE };
+  }
+  // An older deployment: no engineering route, a plain-text 404.
+  if (path.startsWith("/api/mcp/products/p_old/")) return { status: 404, raw: "404 page not found" };
   const collection = "/api/mcp/specifications/s_1/open-questions";
   const item = `${collection}/q_1`;
   if (method === "GET" && path === collection) {
@@ -234,8 +259,8 @@ beforeAll(async () => {
         body: raw.length > 0 ? JSON.parse(raw) : undefined,
       });
       const reply = route(method, path);
-      res.writeHead(reply.status, { "content-type": "application/json" });
-      res.end(JSON.stringify(reply.json));
+      res.writeHead(reply.status, { "content-type": reply.raw ? "text/plain" : "application/json" });
+      res.end(reply.raw ?? JSON.stringify(reply.json));
     });
   });
   await new Promise<void>((resolve) => stubApi.listen(0, "127.0.0.1", resolve));
@@ -294,12 +319,26 @@ const BOARD_TOOLS = [
   "read_board_import",
 ];
 
+type Script = Array<[string, Record<string, unknown>]>;
+
 /** The scripted session every transport runs. */
-async function runSession(client: Client): Promise<SessionRecord> {
+async function runSession(client: Client, calls: Script = BASE_SCRIPT): Promise<SessionRecord> {
   seen = [];
   const { tools } = await client.listTools();
   const results: unknown[] = [];
-  const calls: Array<[string, Record<string, unknown>]> = [
+  for (const [name, args] of calls) {
+    const res = await client.callTool({ name, arguments: args });
+    results.push({
+      isError: res.isError ?? false,
+      structuredContent: res.structuredContent,
+      content: res.content,
+      _meta: res._meta,
+    });
+  }
+  return { instructions: client.getInstructions(), tools, results, requests: [...seen] };
+}
+
+const BASE_SCRIPT: Script = [
     ["get_effective_instructions", { workspaceId: "ws_1" }],
     ["list_open_questions", { specId: "s_1" }],
     ["read_open_question", { specId: "s_1", questionId: "q_1" }],
@@ -330,48 +369,47 @@ async function runSession(client: Client): Promise<SessionRecord> {
     ["read_board", {}],
     ["read_board_import", { workspaceId: "ws_1", importId: "run_1", plan: "blocked", limit: 10 }],
     ["list_board_imports", { workspaceId: "ws_1" }],
-  ];
-  for (const [name, args] of calls) {
-    const res = await client.callTool({ name, arguments: args });
-    results.push({
-      isError: res.isError ?? false,
-      structuredContent: res.structuredContent,
-      content: res.content,
-      _meta: res._meta,
-    });
-  }
-  return { instructions: client.getInstructions(), tools, results, requests: [...seen] };
-}
+];
 
-async function inMemorySession(): Promise<SessionRecord> {
+// Engineering reads (PBI 230): a provider read with the Product notice, the
+// read-only assessment POST with the Workspace notice, a delegation refusal
+// and an older deployment without the routes.
+const ENGINEERING_SCRIPT: Script = [
+  ["resolve_revision", { productId: "p_1", ref: "main" }],
+  ["assess_board_items", { workspaceId: "ws_1", itemIds: ["bi_1"] }],
+  ["list_ci_runs", { productId: "p_1" }],
+  ["read_repository_file", { productId: "p_old", sha: SHA, path: "README.md" }],
+];
+
+async function inMemorySession(script?: Script): Promise<SessionRecord> {
   const server = buildServer({ config: config() });
   const [serverSide, clientSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
   const client = new Client({ name: "parity-in-memory", version: "0.0.0" });
   await client.connect(clientSide);
   try {
-    return await runSession(client);
+    return await runSession(client, script);
   } finally {
     await client.close();
     await server.close();
   }
 }
 
-async function httpSession(): Promise<SessionRecord> {
+async function httpSession(script?: Script): Promise<SessionRecord> {
   const handle = await startHttpServer({ config: config(), port: 0, host: "127.0.0.1" });
   const client = new Client({ name: "parity-http", version: "0.0.0" });
   await client.connect(
     new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${handle.port}/mcp`)),
   );
   try {
-    return await runSession(client);
+    return await runSession(client, script);
   } finally {
     await client.close();
     await handle.close();
   }
 }
 
-async function stdioSession(): Promise<SessionRecord> {
+async function stdioSession(script?: Script): Promise<SessionRecord> {
   const require = createRequire(import.meta.url);
   const tsxLoader = pathToFileURL(require.resolve("tsx")).href;
   const cliPath = fileURLToPath(new URL("./cli.ts", import.meta.url));
@@ -392,7 +430,7 @@ async function stdioSession(): Promise<SessionRecord> {
     }),
   );
   try {
-    return await runSession(client);
+    return await runSession(client, script);
   } finally {
     await client.close();
   }
@@ -603,6 +641,63 @@ describe("stdio and HTTP transports", () => {
         },
       ]);
       expect(memory.requests.filter((r) => r.policyRevision !== undefined)).toHaveLength(1);
+    },
+    60_000,
+  );
+
+  it(
+    "forward engineering reads identically: results, notices, refusals and requests (PBI 230)",
+    async () => {
+      const memory = await inMemorySession(ENGINEERING_SCRIPT);
+      const http = await httpSession(ENGINEERING_SCRIPT);
+      const stdio = await stdioSession(ENGINEERING_SCRIPT);
+
+      expect(JSON.stringify(http.tools)).toBe(JSON.stringify(memory.tools));
+      expect(JSON.stringify(stdio.tools)).toBe(JSON.stringify(memory.tools));
+      expect(http.results).toEqual(memory.results);
+      expect(stdio.results).toEqual(memory.results);
+      expect(http.requests).toEqual(memory.requests);
+      expect(stdio.requests).toEqual(memory.requests);
+
+      const productNotice = SPEC_NOTICE.replaceAll("specification:s_1", "product:p_1");
+      expect(memory.results[0]).toMatchObject({ isError: false, structuredContent: RESOLVED_FIXTURE });
+      expect((memory.results[0] as { content: unknown[] }).content[1]).toEqual({ type: "text", text: productNotice });
+      expect(memory.results[1]).toMatchObject({ isError: false, structuredContent: ASSESSMENT_FIXTURE });
+      expect((memory.results[1] as { content: unknown[] }).content[1]).toEqual({ type: "text", text: WS_NOTICE });
+      expect(memory.results[2]).toMatchObject({
+        isError: true,
+        structuredContent: { code: "ENGINEERING_DELEGATION_REQUIRED", details: { hint: DELEGATION_ERROR.error.details.hint } },
+      });
+      expect((memory.results[2] as { structuredContent: { details: unknown } }).structuredContent.details).toEqual({
+        hint: DELEGATION_ERROR.error.details.hint,
+      });
+      expect(memory.results[3]).toMatchObject({ isError: true, structuredContent: { code: "ENGINEERING_UNSUPPORTED" } });
+
+      const get = (path: string) => ({
+        method: "GET",
+        path,
+        authorization: `Bearer ${TOKEN}`,
+        cookie: undefined,
+        contentType: undefined,
+        body: undefined,
+      });
+      expect(memory.requests).toEqual([
+        get("/api/mcp/products/p_1/engineering/revisions/resolve?ref=main"),
+        get(`/api/mcp/agent-policy?target=${encodeURIComponent("product:p_1")}`),
+        {
+          method: "POST",
+          path: "/api/mcp/workspaces/ws_1/board/engineering/assessments",
+          authorization: `Bearer ${TOKEN}`,
+          cookie: undefined,
+          contentType: "application/json",
+          body: { itemIds: ["bi_1"] },
+        },
+        get(`/api/mcp/agent-policy?target=${encodeURIComponent("workspace:ws_1")}`),
+        get("/api/mcp/products/p_1/engineering/ci/runs"),
+        get(`/api/mcp/products/p_old/engineering/file?sha=${SHA}&path=README.md`),
+      ]);
+      // Engineering tools only read: no policy precondition ever.
+      expect(memory.requests.filter((r) => r.policyRevision !== undefined)).toHaveLength(0);
     },
     60_000,
   );

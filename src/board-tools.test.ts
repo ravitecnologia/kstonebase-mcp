@@ -1398,7 +1398,13 @@ describe("Board import report tools", () => {
     const { tools } = await mcp.listTools();
     const names = tools.map((t) => t.name);
     expect(names.filter((n) => /import/.test(n)).sort()).toEqual(["list_board_imports", "read_board_import"]);
-    expect(names.filter((n) => /connection|discover|mapping|confirm|cancel|retry|azure|devops/i.test(n))).toEqual([]);
+    // discover_engineering_links (PBI 230) discovers a card's candidate
+    // pull requests, not Azure DevOps boards; it is an engineering read.
+    expect(
+      names.filter(
+        (n) => n !== "discover_engineering_links" && /connection|discover|mapping|confirm|cancel|retry|azure|devops/i.test(n),
+      ),
+    ).toEqual([]);
     for (const tool of tools) {
       const props = Object.keys((tool.inputSchema as { properties?: Record<string, unknown> }).properties ?? {});
       for (const prop of props) {
