@@ -1,7 +1,9 @@
 // New Products always use the flexible document model (Kstonebase MCP spec
-// specification-authoring/protocol.md, PBI 271): create_product has no
-// management-type input and never forwards one, and the Product tool
-// descriptions offer no type choice. The server is built exactly as every
+// specification-authoring/protocol.md, PBI 271): create_product offers no
+// management-type choice and the Product tool descriptions offer none either.
+// A deprecated, free-form specificationManagementType stays so an explicit
+// request from an older agent reaches the API and gets its actionable
+// PRODUCT_TYPE_UNSUPPORTED refusal instead of being silently stripped. The server is built exactly as every
 // transport builds it (buildServer) and driven by the SDK client over an
 // in-memory transport, against a recording stub of the Website proxy.
 
@@ -29,23 +31,42 @@ const CONFIG: ResolvedConfig = {
   allowInsecure: false,
 };
 
+const DEPRECATED =
+  'Deprecated — omit it. New Products always use the flexible document model; any value other than "free" is refused by the server with PRODUCT_TYPE_UNSUPPORTED.';
+
+const REFUSAL = {
+  error: {
+    code: "BAD_REQUEST",
+    message: "New Products always use the flexible document model.",
+    details: {
+      code: "PRODUCT_TYPE_UNSUPPORTED",
+      requested: "web_application",
+      supported: ["free"],
+      hint: "Omit specificationManagementType; new Products always use the flexible document model.",
+    },
+  },
+};
+
 interface Sent {
   method: string;
   path: string;
   body: unknown;
 }
 
-function stubApi() {
+function stubApi(productReply?: { status: number; json: unknown }) {
   const sent: Sent[] = [];
   const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const raw = typeof init?.body === "string" ? init.body : undefined;
     sent.push({ method: init?.method ?? "GET", path: url.pathname, body: raw === undefined ? undefined : JSON.parse(raw) });
-    const json =
+    const reply =
       url.pathname === "/api/mcp/agent-policy"
-        ? { items: [] }
-        : { id: "p_new", name: "Billing", workspaceId: "ws_1" };
-    return new Response(JSON.stringify(json), { status: 200, headers: { "content-type": "application/json" } });
+        ? { status: 200, json: { items: [] } }
+        : (productReply ?? { status: 200, json: { id: "p_new", name: "Billing", workspaceId: "ws_1" } });
+    return new Response(JSON.stringify(reply.json), {
+      status: reply.status,
+      headers: { "content-type": "application/json" },
+    });
   });
   return { sent, fetcher: fetcher as unknown as typeof fetch };
 }
@@ -75,7 +96,7 @@ afterEach(() => {
 });
 
 describe("create_product (PBI 271)", () => {
-  it("has no specificationManagementType input and describes the flexible document model", async () => {
+  it("keeps specificationManagementType only as a deprecated, optional free-form string, never a choice", async () => {
     const { fetcher } = stubApi();
     const { mcp, close } = await connect(fetcher);
     try {
@@ -86,9 +107,15 @@ describe("create_product (PBI 271)", () => {
         "name",
         "description",
         "tags",
+        "specificationManagementType",
         "expectedPolicyRevision",
       ]);
-      expect(JSON.stringify(tool.inputSchema)).not.toMatch(/specificationManagementType|web_application/);
+      const field = (tool.inputSchema.properties as Record<string, Record<string, unknown>>).specificationManagementType;
+      expect(field).toEqual({ type: "string", description: DEPRECATED });
+      expect(field).not.toHaveProperty("enum");
+      expect(tool.inputSchema.required ?? []).not.toContain("specificationManagementType");
+      expect(JSON.stringify(tool.inputSchema)).not.toContain("web_application");
+      expect(tool.description).not.toMatch(/specificationManagementType|web_application|Web Application/);
       expect(tool.description).toBe(
         "Create a new Product inside the bound Workspace. New Products use the flexible document model. Requires a Workspace-scope binding; product-allowlist credentials cannot create Products.",
       );
@@ -97,13 +124,13 @@ describe("create_product (PBI 271)", () => {
     }
   });
 
-  it("never forwards a management type, even when an older agent sends one", async () => {
+  it("does not send a management type when the agent omits it", async () => {
     const { sent, fetcher } = stubApi();
     const { mcp, close } = await connect(fetcher);
     try {
       const res = await mcp.callTool({
         name: "create_product",
-        arguments: { name: "Billing", description: "Payments", tags: ["pay"], specificationManagementType: "web_application" },
+        arguments: { name: "Billing", description: "Payments", tags: ["pay"] },
       });
       expect(res.isError).not.toBe(true);
       const creates = sent.filter((r) => r.path === "/api/mcp/workspaces/ws_1/products");
@@ -111,6 +138,47 @@ describe("create_product (PBI 271)", () => {
       expect(creates[0]!.method).toBe("POST");
       expect(creates[0]!.body).toEqual({ name: "Billing", description: "Payments", tags: ["pay"] });
       expect(JSON.stringify(creates[0]!.body)).not.toContain("specificationManagementType");
+    } finally {
+      await close();
+    }
+  });
+
+  it("forwards an explicit legacy value unchanged and surfaces the API refusal with its hint", async () => {
+    const { sent, fetcher } = stubApi({ status: 400, json: REFUSAL });
+    const { mcp, close } = await connect(fetcher);
+    try {
+      const res = await mcp.callTool({
+        name: "create_product",
+        arguments: { name: "Billing", specificationManagementType: "web_application" },
+      });
+      const creates = sent.filter((r) => r.path === "/api/mcp/workspaces/ws_1/products");
+      expect(creates).toHaveLength(1);
+      expect(creates[0]!.body).toEqual({ name: "Billing", specificationManagementType: "web_application" });
+      expect(res.isError).toBe(true);
+      const failure = res.structuredContent as { code: string; message: string; details?: Record<string, unknown> };
+      // The existing default mapping classifies BAD_REQUEST + details.code
+      // PRODUCT_TYPE_UNSUPPORTED by status (pinned in errors.test.ts); the
+      // API's message and actionable hint reach the agent unchanged.
+      expect(failure.code).toBe("INTERNAL_ERROR");
+      expect(failure.message).toBe("New Products always use the flexible document model.");
+      expect(failure.details).toEqual({
+        hint: "Omit specificationManagementType; new Products always use the flexible document model.",
+      });
+      const text = (res.content as Array<{ type: string; text: string }>)[0]!.text;
+      expect(text).toContain("New Products always use the flexible document model.");
+      expect(text).toContain("Omit specificationManagementType; new Products always use the flexible document model.");
+    } finally {
+      await close();
+    }
+  });
+
+  it("forwards an explicit \"free\" unchanged", async () => {
+    const { sent, fetcher } = stubApi();
+    const { mcp, close } = await connect(fetcher);
+    try {
+      await mcp.callTool({ name: "create_product", arguments: { name: "Billing", specificationManagementType: "free" } });
+      const creates = sent.filter((r) => r.path === "/api/mcp/workspaces/ws_1/products");
+      expect(creates[0]!.body).toEqual({ name: "Billing", specificationManagementType: "free" });
     } finally {
       await close();
     }

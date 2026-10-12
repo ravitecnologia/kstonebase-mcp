@@ -1406,13 +1406,22 @@ export function registerWriteTools(
       description:
         "Create a new Product inside the bound Workspace. New Products use the flexible document model. Requires a Workspace-scope binding; product-allowlist credentials cannot create Products.",
       annotations: ADDITIVE_WRITE_TOOL,
-      // No management-type input (PBI 271): every new Product uses the
-      // flexible document model, so the field is neither accepted nor sent.
+      // No management-type choice (PBI 271): every new Product uses the
+      // flexible document model. The deprecated, free-form field stays only
+      // so an explicit request from an older agent reaches the API and gets
+      // its actionable PRODUCT_TYPE_UNSUPPORTED refusal instead of being
+      // silently stripped.
       inputSchema: {
         workspaceId: z.string().optional(),
         name: z.string().trim().min(1).max(80),
         description: z.string().max(280).optional(),
         tags: z.array(z.string().min(1).max(40)).max(32).optional(),
+        specificationManagementType: z
+          .string()
+          .optional()
+          .describe(
+            'Deprecated — omit it. New Products always use the flexible document model; any value other than "free" is refused by the server with PRODUCT_TYPE_UNSUPPORTED.',
+          ),
         expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
@@ -1429,6 +1438,10 @@ export function registerWriteTools(
               name: args.name,
               description: args.description,
               tags: args.tags,
+              // Forwarded unchanged only when present, so the API decides.
+              ...(args.specificationManagementType !== undefined
+                ? { specificationManagementType: args.specificationManagementType }
+                : {}),
             },
             writeOptions(args),
           );

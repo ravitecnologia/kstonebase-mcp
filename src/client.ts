@@ -986,6 +986,8 @@ export class KstonebaseClient {
       name: string;
       description?: string;
       tags?: string[];
+      /** Deprecated (PBI 271): sent only when an older agent passes it; the API refuses anything but "free". */
+      specificationManagementType?: string;
     },
     options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
