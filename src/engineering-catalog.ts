@@ -1,6 +1,8 @@
 // Engineering MCP tool catalog — discovery, read and assessment tools
 // (Kstonebase MCP › features/mcp-engineering-tools.md ME1–ME8, PBI 230 / D1;
-// API › features/agent-engineering-contract.md §1–§7 and its amendments).
+// API › features/agent-engineering-contract.md §1–§7 and its amendments),
+// then the evidence, assessment-save and reviewed-action tools (MT-I12–MT-I14,
+// PBI 239 / D3; API §6–§8).
 //
 // This file is shared VERBATIM by the standalone package
 // (kstonebase-mcp/src/engineering-catalog.ts) and the Kstonebase-hosted and
@@ -40,6 +42,26 @@ export const ENGINEERING_READ: ToolAnnotations = {
   openWorldHint: false,
 };
 
+/**
+ * Adds or saves a Kstonebase record; a retry with the same key or version
+ * changes nothing more (Board §2.1 ADDITIVE, ME3). Proposals and evidence are
+ * Kstonebase records with no external effect, so `openWorldHint` is false.
+ */
+export const ENGINEERING_ADDITIVE: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+/** Removes or ends a Kstonebase record, guarded by its version (Board §2.1 OVERWRITE, ME3). */
+export const ENGINEERING_OVERWRITE: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
 /** The frozen operation vocabulary (API contract §3). */
 export const ENGINEERING_OPERATIONS = [
   "code.read",
@@ -60,6 +82,43 @@ export const ENGINEERING_OPERATIONS = [
 // and assess_board_items.
 const STATUS_REVIEW =
   "For a status review: discover the configured repositories and your capabilities first (list_engineering_repositories, get_engineering_capabilities), read the card and its specifications, gather live evidence, cite it with revisions and links, and list what could not be verified. Never use a recorded Board state or an old note as a substitute for a live check.";
+
+/** Evidence kinds a card can link (API contract §6, AE-I42). */
+export const ENGINEERING_LINK_KINDS = ["branch", "commit", "pull_request", "ci_run", "artifact", "deployment"] as const;
+
+/** Reviewed action kinds (API contract §8, AE-I61). */
+export const ENGINEERING_ACTION_KINDS = [
+  "pull_request.create",
+  "pull_request.update",
+  "pull_request.request_review",
+  "pull_request.merge",
+  "pipeline.run",
+  "board.complete",
+] as const;
+
+export type EngineeringActionKind = (typeof ENGINEERING_ACTION_KINDS)[number];
+
+/** Action lifecycle states (API contract §8 "Lifecycle"). */
+export const ENGINEERING_ACTION_STATES = [
+  "proposed",
+  "confirmed",
+  "dispatching",
+  "running",
+  "succeeded",
+  "failed",
+  "unknown",
+  "cancelled",
+  "expired",
+  "stale",
+  "rejected",
+] as const;
+
+// The engineering write sentence (MT-I12): writes need engineering write access.
+const WRITE_ACCESS = "Needs engineering write access.";
+
+// A reviewed action runs only after a person confirms it on its page (ME5).
+const CONFIRMED_BY_A_PERSON =
+  "This tool never executes anything: a person confirms the exact change on its Kstonebase review page with their own account, and only then does Kstonebase run it.";
 
 const describe = (text: string): string => `${text} ${ENGINEERING_SENTENCE}`;
 
@@ -86,6 +145,105 @@ const cursor = () =>
   z.string().max(512).describe("nextCursor from the previous page, passed back unchanged with the same arguments.");
 const bindingKey = (what: string) => z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/).describe(what);
 const environmentKey = (what: string) => z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/).describe(what);
+const actionId = () =>
+  z.string().min(1).max(100).describe("Action id (from propose_engineering_action or list_engineering_actions).");
+const idempotencyKey = () =>
+  z
+    .string()
+    .regex(/^[A-Za-z0-9._:-]{8,128}$/)
+    .describe(
+      "A key you choose for this change: 8–128 letters, digits, '.', '_', ':' or '-'. Retry an uncertain call with the same key; use a new key only for a new change.",
+    );
+
+// The existing `expectedPolicyRevision` input of every write (MCP ›
+// features/workspace-agent-instructions.md M4), inlined because this file
+// imports packages only: the same pattern and text as the transports' own
+// policy modules. Sent only as the X-Kstonebase-Policy-Revision header.
+const EXPECTED_POLICY_REVISION_DESCRIPTION =
+  "Policy revision from the latest Kstonebase Workspace instructions notice for this resource (wp1_…). Required by Workspaces that enforce their instructions; a changed policy answers POLICY_STALE.";
+const expectedPolicyRevision = () =>
+  z
+    .string()
+    .regex(/^wp1_[A-Za-z0-9_-]{22}$/)
+    .optional()
+    .describe(EXPECTED_POLICY_REVISION_DESCRIPTION);
+
+// ──── Reviewed action inputs (API contract AE-I78, AE-I86, AE-I95; MT-I12) ──
+//
+// One strict shape per kind: unknown keys are refused, and no shape carries
+// an approval, a digest, a confirmation flag or an identity (ME5).
+
+const prNumber = () => z.number().int().min(1).max(2147483647).describe("Pull request number.");
+const prTitle = () =>
+  z.string().min(1).max(256).describe("Pull request title: one line, shown to the confirming person as data.");
+const prDescription = () =>
+  z
+    .string()
+    .max(20000)
+    .describe("Pull request description (GitHub: up to 20,000 bytes; Azure DevOps: up to 4,000 characters), shown to the confirming person as data.");
+const reviewer = () => z.string().min(1).max(100);
+
+export const ENGINEERING_ACTION_INPUTS = {
+  "pull_request.create": z.strictObject({
+    sourceBranch: branch("Source branch, for example a development run's published branch."),
+    targetBranch: branch(
+      "Target branch: the base, integration or release branch of the delivery settings; the default branch of the settings when omitted.",
+    ).optional(),
+    title: prTitle(),
+    description: prDescription().optional(),
+    draft: z.boolean().optional().describe("Open the pull request as a draft."),
+  }),
+  "pull_request.update": z.strictObject({
+    number: prNumber(),
+    title: prTitle().optional(),
+    description: prDescription().optional(),
+    targetBranch: branch("New target branch: the base, integration or release branch of the delivery settings.").optional(),
+  }),
+  "pull_request.request_review": z.strictObject({
+    number: prNumber(),
+    reviewers: z
+      .array(reviewer())
+      .min(1)
+      .max(10)
+      .describe("1–10 reviewers: GitHub logins, or Azure DevOps identity GUIDs."),
+    teamReviewers: z.array(reviewer()).max(10).optional().describe("Up to 10 GitHub team slugs."),
+  }),
+  "pull_request.merge": z.strictObject({
+    number: prNumber(),
+    strategy: z
+      .enum(["merge_commit", "squash", "rebase", "rebase_merge"])
+      .describe("Merge strategy allowed by the delivery settings (rebase_merge is Azure DevOps only)."),
+  }),
+  "pipeline.run": z.strictObject({
+    bindingKey: bindingKey("CI binding key from read_delivery_configuration; the binding must allow dispatch."),
+    ref: branch("Branch or tag name to run (not a SHA)."),
+    sha: sha("Commit the ref must still point to").optional(),
+    environmentKey: environmentKey(
+      "Environment the run deploys to; required when the binding deploys to production.",
+    ).optional(),
+  }),
+  "board.complete": z.strictObject({
+    workspaceId: z
+      .string()
+      .min(1)
+      .max(64)
+      .describe("The Workspace of the cards: the Product's current Software Engineering Workspace."),
+    items: z
+      .array(
+        z.strictObject({
+          itemId: itemId(),
+          assessmentId: z
+            .string()
+            .min(1)
+            .max(100)
+            .describe("The card's saved, fresh, eligible assessment (see save_board_item_assessment)."),
+        }),
+      )
+      .min(1)
+      .max(10)
+      .describe("1–10 PBIs in Doing, each with its own saved assessment."),
+  }),
+} as const satisfies Record<EngineeringActionKind, z.ZodType>;
 
 // ──── Tool catalog (ME4, D1 scope) ─────────────────────────────────────────
 
@@ -341,12 +499,131 @@ export const ENGINEERING_TOOLS = {
         .describe("Explicit Products per item id (1–5 each); otherwise the card's Product and the Products of its verified links."),
     },
   },
+  // ──── D3: evidence, assessment save and reviewed actions (MT-I12) ──────
+  link_engineering_evidence: {
+    title: "Link engineering evidence to a card",
+    description: describe(
+      `Link one piece of engineering evidence of a Product's repository (a branch, commit, pull request, CI run, artifact or deployment) to a Board work item. Kstonebase reads it through the acting user's own connection and stores a verified snapshot; a candidate from discover_engineering_links becomes evidence only once linked here. externalId is the branch name, the 40-character commit SHA, the pull request number, <binding>:<run id>, <binding>:<run id>:<artifact id> or <environment>:<deployment id>. Pass the card's evidence version from list_engineering_links as expectedVersion (0 when it has no links yet); linking evidence that is already linked changes nothing. A link records evidence; it never changes the card's state. ${WRITE_ACCESS}`,
+    ),
+    annotations: ENGINEERING_ADDITIVE,
+    inputSchema: {
+      workspaceId: workspaceId(),
+      itemId: itemId(),
+      productId: productId(),
+      kind: z.enum(ENGINEERING_LINK_KINDS).describe("Kind of evidence."),
+      externalId: z.string().min(1).max(200).describe("The evidence's identity in the Product's repository (see the description)."),
+      expectedVersion: z
+        .number()
+        .int()
+        .min(0)
+        .describe("The card's evidence version from list_engineering_links (0 when it has no links yet)."),
+      idempotencyKey: idempotencyKey(),
+      expectedPolicyRevision: expectedPolicyRevision(),
+    },
+  },
+  unlink_engineering_evidence: {
+    title: "Remove engineering evidence from a card",
+    description: describe(
+      `Remove one engineering evidence link from a Board work item; Kstonebase keeps it in the card's history. It makes no provider call, so evidence of a repository you can no longer read can still be removed, and removing an already removed link changes nothing. Pass the link id and the card's evidence version from list_engineering_links as expectedVersion. ${WRITE_ACCESS}`,
+    ),
+    annotations: ENGINEERING_OVERWRITE,
+    inputSchema: {
+      workspaceId: workspaceId(),
+      itemId: itemId(),
+      linkId: z.string().min(1).max(100).describe("Link id from list_engineering_links."),
+      expectedVersion: z.number().int().min(1).describe("The card's evidence version from list_engineering_links."),
+      expectedPolicyRevision: expectedPolicyRevision(),
+    },
+  },
+  save_board_item_assessment: {
+    title: "Save a card assessment",
+    description: describe(
+      `Save one of your own assessments from assess_board_items (at most 30 minutes old) on its Board PBI as an immutable record, and append one Board note with its verdict and gaps. Saving makes no provider call and never moves the card: a saved, fresh, eligible assessment is what a board.complete proposal cites. Saving an already saved assessment changes nothing. ${WRITE_ACCESS}`,
+    ),
+    annotations: ENGINEERING_ADDITIVE,
+    inputSchema: {
+      workspaceId: workspaceId(),
+      itemId: itemId(),
+      assessmentId: z.string().min(1).max(100).describe("The card's assessment id from assess_board_items."),
+      idempotencyKey: idempotencyKey(),
+      expectedPolicyRevision: expectedPolicyRevision(),
+    },
+  },
+  propose_engineering_action: {
+    title: "Propose an engineering action",
+    description: describe(
+      `Propose a reviewed engineering action on a Product: create or update a pull request, request reviewers, merge a pull request, run a delivery pipeline, or move Board PBIs to Done (board.complete: each card in Doing with a saved, fresh, eligible assessment from save_board_item_assessment). input must have the shape of kind. Kstonebase checks it against the live state and the delivery settings and stores the exact review. ${CONFIRMED_BY_A_PERSON} Give the person the review link from the result and say nothing changes until they confirm it before it expires; never claim the change happened until read_engineering_action shows it succeeded, and never propose the same change again on your own. ${WRITE_ACCESS}`,
+    ),
+    annotations: ENGINEERING_ADDITIVE,
+    inputSchema: {
+      productId: productId(),
+      kind: z.enum(ENGINEERING_ACTION_KINDS).describe("Kind of action."),
+      itemId: itemId().optional(),
+      input: z
+        .union([
+          ENGINEERING_ACTION_INPUTS["pull_request.create"],
+          ENGINEERING_ACTION_INPUTS["pull_request.update"],
+          ENGINEERING_ACTION_INPUTS["pull_request.request_review"],
+          ENGINEERING_ACTION_INPUTS["pull_request.merge"],
+          ENGINEERING_ACTION_INPUTS["pipeline.run"],
+          ENGINEERING_ACTION_INPUTS["board.complete"],
+        ])
+        .describe(
+          "The change, in the shape of kind: pull_request.create {sourceBranch, targetBranch?, title, description?, draft?}; pull_request.update {number, title?, description?, targetBranch?}; pull_request.request_review {number, reviewers, teamReviewers?}; pull_request.merge {number, strategy}; pipeline.run {bindingKey, ref, sha?, environmentKey?}; board.complete {workspaceId, items: [{itemId, assessmentId}]}.",
+        ),
+      idempotencyKey: idempotencyKey(),
+      expectedPolicyRevision: expectedPolicyRevision(),
+    },
+  },
+  read_engineering_action: {
+    title: "Read an engineering action",
+    description: describe(
+      "Read one reviewed engineering action of a Product: its state (proposed, confirmed, dispatching, running, succeeded, failed, unknown, cancelled, expired, stale or rejected), its review, outcome, version and review link. Report the outcome exactly as it reads: unknown means it may or may not have been applied, and only a person can check it with the provider on the review page. Never propose it again automatically after unknown or failed; a new proposal needs the person's request.",
+    ),
+    annotations: ENGINEERING_READ,
+    inputSchema: { productId: productId(), actionId: actionId() },
+  },
+  list_engineering_actions: {
+    title: "List engineering actions",
+    description: describe(
+      "List the reviewed engineering actions of the Products currently in a Workspace, newest first, optionally of one Board work item or in one state (follow nextCursor). Listings carry no review: read an action with read_engineering_action. Report unknown outcomes as uncertain, never as done. Needs a whole-Workspace credential.",
+    ),
+    annotations: ENGINEERING_READ,
+    inputSchema: {
+      workspaceId: workspaceId(),
+      itemId: itemId().optional(),
+      state: z.enum(ENGINEERING_ACTION_STATES).optional(),
+      cursor: cursor().optional(),
+    },
+  },
+  cancel_engineering_action: {
+    title: "Cancel a proposed engineering action",
+    description: describe(
+      `Cancel a proposed engineering action that nobody has confirmed, so it can never run. Only the acting person's credential can cancel it, and only while it is proposed; it never stops or undoes a change already sent to the provider. Pass the action's version from read_engineering_action as expectedVersion. ${CONFIRMED_BY_A_PERSON} Confirming, declining and checking outcomes happen only there. ${WRITE_ACCESS}`,
+    ),
+    annotations: ENGINEERING_OVERWRITE,
+    inputSchema: {
+      productId: productId(),
+      actionId: actionId(),
+      expectedVersion: z.number().int().min(1).describe("The action's version from read_engineering_action."),
+      expectedPolicyRevision: expectedPolicyRevision(),
+    },
+  },
 } as const;
 
 export type EngineeringToolName = keyof typeof ENGINEERING_TOOLS;
 
-/** Registration order of the D1 tools (contract table order, ME4). */
+/** Registration order: the 20 D1 tools, then the 7 D3 tools (ME4, MT-I12). */
 export const ENGINEERING_TOOL_NAMES = Object.keys(ENGINEERING_TOOLS) as EngineeringToolName[];
+
+/**
+ * The write tools (MT-I12): they end with `expectedPolicyRevision`, send it
+ * only as the X-Kstonebase-Policy-Revision header, and a failure in flight may
+ * have applied. Every other engineering tool reads.
+ */
+export const ENGINEERING_WRITE_TOOLS: ReadonlySet<EngineeringToolName> = new Set(
+  ENGINEERING_TOOL_NAMES.filter((name) => ENGINEERING_TOOLS[name].annotations.readOnlyHint !== true),
+);
 
 /**
  * Registers every catalog tool, in catalog order, with the transport's own
@@ -378,17 +655,28 @@ export const ENGINEERING_WORKSPACE_TOOLS: ReadonlySet<EngineeringToolName> = new
   "list_engineering_links",
   "discover_engineering_links",
   "assess_board_items",
+  "link_engineering_evidence",
+  "unlink_engineering_evidence",
+  "save_board_item_assessment",
+  "list_engineering_actions",
 ]);
 
-// ──── API requests (`/mcp/…` routes, API contract §1–§7) ───────────────────
+// ──── API requests (`/mcp/…` routes, API contract §1–§8) ───────────────────
 
 export interface EngineeringRequest {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "DELETE";
   /** API `/mcp/…` path with its query string. */
   path: string;
   body?: Record<string, unknown>;
   /** What the call addresses: its Workspace instructions notice (ME7). */
   target: { type: "workspace" | "product"; id: string };
+  /** A write (MT-I12): a failure in flight may have applied it. */
+  write?: true;
+  /**
+   * The agent's `expectedPolicyRevision`, on writes only, when it passed one:
+   * sent only as the X-Kstonebase-Policy-Revision header, never in the body.
+   */
+  policyRevision?: string;
 }
 
 /** A refused argument, raised before any request. */
@@ -432,6 +720,31 @@ const str = (args: Args, key: string) => args[key] as string | undefined;
 const num = (args: Args, key: string) => args[key] as number | undefined;
 const list = (args: Args, key: string) => args[key] as string[] | undefined;
 
+/** A write: the agent's policy revision travels with it, never in the body. */
+function writeRequest(request: Omit<EngineeringRequest, "write" | "policyRevision">, args: Args): EngineeringRequest {
+  const out: EngineeringRequest = { ...request, write: true };
+  const revision = str(args, "expectedPolicyRevision");
+  if (revision !== undefined) out.policyRevision = revision;
+  return out;
+}
+
+/** propose_engineering_action: `input` must have the shape of `kind` (MT-I12). */
+function actionInput(args: Args): unknown {
+  const kind = str(args, "kind");
+  const shape =
+    kind !== undefined && Object.hasOwn(ENGINEERING_ACTION_INPUTS, kind)
+      ? ENGINEERING_ACTION_INPUTS[kind as EngineeringActionKind]
+      : undefined;
+  if (!shape || !shape.safeParse(args.input).success) {
+    throw new EngineeringArgumentError(
+      "input",
+      "invalid-value",
+      `input does not have the shape of kind ${String(kind)}. Pass exactly the fields of that kind (see the input description).`,
+    );
+  }
+  return args.input;
+}
+
 /**
  * The API request of one engineering tool call. `workspaceId` is the
  * Workspace the transport resolved for Workspace tools (the argument, or the
@@ -448,6 +761,7 @@ export function buildEngineeringRequest(
     }
     const ws = segment("workspaceId", workspaceId);
     const target = { type: "workspace" as const, id: workspaceId };
+    const item = () => `/mcp/workspaces/${ws}/board/items/${segment("itemId", str(args, "itemId") ?? "")}`;
     switch (name) {
       case "list_engineering_repositories":
         return { method: "GET", path: `/mcp/workspaces/${ws}/engineering/repositories`, target };
@@ -467,13 +781,63 @@ export function buildEngineeringRequest(
           ])}`,
           target,
         };
-      default: {
-        // assess_board_items: a POST that only reads (API contract §7); it
-        // never carries a policy precondition.
+      case "assess_board_items": {
+        // A POST that only reads (API contract §7); it never carries a
+        // policy precondition.
         const body: Record<string, unknown> = { itemIds: args.itemIds };
         if (args.productIds !== undefined) body.productIds = args.productIds;
         return { method: "POST", path: `/mcp/workspaces/${ws}/board/engineering/assessments`, body, target };
       }
+      case "link_engineering_evidence":
+        return writeRequest(
+          {
+            method: "POST",
+            path: `${item()}/engineering/links`,
+            body: {
+              idempotencyKey: args.idempotencyKey,
+              expectedVersion: args.expectedVersion,
+              productId: args.productId,
+              kind: args.kind,
+              externalId: args.externalId,
+            },
+            target,
+          },
+          args,
+        );
+      case "unlink_engineering_evidence":
+        // The version travels in the query; the DELETE has no body (AE-I43).
+        return writeRequest(
+          {
+            method: "DELETE",
+            path: `${item()}/engineering/links/${segment("linkId", str(args, "linkId") ?? "")}${query([
+              ["expectedVersion", num(args, "expectedVersion")],
+            ])}`,
+            target,
+          },
+          args,
+        );
+      case "save_board_item_assessment":
+        return writeRequest(
+          {
+            method: "POST",
+            path: `${item()}/engineering/assessments`,
+            body: { idempotencyKey: args.idempotencyKey, assessmentId: args.assessmentId },
+            target,
+          },
+          args,
+        );
+      case "list_engineering_actions":
+        return {
+          method: "GET",
+          path: `/mcp/workspaces/${ws}/engineering/actions${query([
+            ["itemId", str(args, "itemId")],
+            ["state", str(args, "state")],
+            ["cursor", str(args, "cursor")],
+          ])}`,
+          target,
+        };
+      default:
+        throw new EngineeringArgumentError("name", "invalid-value", `Unknown engineering tool ${String(name)}.`);
     }
   }
 
@@ -581,6 +945,25 @@ export function buildEngineeringRequest(
       );
     case "read_active_deployment":
       return read(`environments/${segment("environment", str(args, "environment") ?? "")}/active`);
+    case "propose_engineering_action": {
+      const input = actionInput(args);
+      const body: Record<string, unknown> = { idempotencyKey: args.idempotencyKey, kind: args.kind };
+      if (args.itemId !== undefined) body.itemId = args.itemId;
+      body.input = input;
+      return writeRequest({ method: "POST", path: `${product}/engineering/actions`, body, target }, args);
+    }
+    case "read_engineering_action":
+      return read(`actions/${segment("actionId", str(args, "actionId") ?? "")}`);
+    case "cancel_engineering_action":
+      return writeRequest(
+        {
+          method: "POST",
+          path: `${product}/engineering/actions/${segment("actionId", str(args, "actionId") ?? "")}/cancel`,
+          body: { expectedVersion: args.expectedVersion },
+          target,
+        },
+        args,
+      );
     default:
       throw new EngineeringArgumentError("name", "invalid-value", `Unknown engineering tool ${String(name)}.`);
   }
@@ -627,9 +1010,31 @@ export const ENGINEERING_ERROR_CODES: ReadonlySet<string> = new Set([
   "ITEM_NOT_FOUND",
   "INVALID_PRODUCT",
   "WORKSPACE_ARCHIVED",
+  // Evidence, assessment-save and reviewed-action refusals (MT-I13).
+  "ACTION_CONFLICT",
+  "ACTION_STATE_CONFLICT",
+  "ACTION_ACTOR_REQUIRED",
+  "ACTION_NOT_FOUND",
+  "ACTION_STALE",
+  "ACTION_EXPIRED",
+  "HUMAN_CONFIRMATION_REQUIRED",
+  "STALE_VERSION",
+  "IDEMPOTENCY_KEY_REUSED",
+  "LINK_LIMIT_REACHED",
+  "LINK_NOT_FOUND",
+  "ARTIFACT_NOT_FOUND",
+  "DEPLOYMENT_NOT_FOUND",
+  "ASSESSMENT_NOT_FOUND",
+  "ITEM_ARCHIVED",
+  "COMPLETION_NOT_ELIGIBLE",
+  "PULL_REQUEST_EXISTS",
+  "PULL_REQUEST_NOT_OPEN",
+  "PULL_REQUEST_DRAFT",
+  "PULL_REQUEST_NOT_MERGEABLE",
+  "INVALID_REFERENCE",
 ]);
 
-/** The API `details` keys an engineering refusal passes on (ME6). */
+/** The API `details` keys an engineering refusal passes on (ME6, MT-I13). */
 export const ENGINEERING_DETAIL_KEYS = [
   "field",
   "problem",
@@ -641,6 +1046,12 @@ export const ENGINEERING_DETAIL_KEYS = [
   "feature",
   "changed",
   "hint",
+  "limit",
+  "actionId",
+  "state",
+  "itemId",
+  "number",
+  "verdict",
 ] as const;
 
 const UNVERIFIED = "Nothing was read: report this evidence as unverified.";
@@ -661,10 +1072,22 @@ const retryAfter = (details: Readonly<Record<string, unknown>> | undefined): str
     ? `${details.retryAfter}`
     : "a minute";
 
-/** Remediation of an engineering refusal (ME6), filled from its details. */
+/**
+ * The remediation of a write tool that failed in flight or with an
+ * unexpected API error (MT-I13): it may have applied, so read before retrying.
+ */
+export const ENGINEERING_WRITE_INTERNAL_ERROR =
+  "The change may or may not have been applied. Read the current state (list_engineering_links, read_engineering_action) before retrying with the same idempotencyKey.";
+
+/**
+ * Remediation of an engineering refusal (ME6, MT-I13), filled from its
+ * details. `write` selects the write tools' INTERNAL_ERROR text; reads keep
+ * theirs.
+ */
 export function engineeringRemediation(
   code: string,
   details?: Readonly<Record<string, unknown>>,
+  write = false,
 ): string | undefined {
   switch (code) {
     case "ENGINEERING_UNSUPPORTED":
@@ -730,8 +1153,90 @@ export function engineeringRemediation(
     case "INVALID_PRODUCT":
       return "Each Product must be one currently grouped in this Workspace (see list_engineering_repositories). Fix details.field and retry.";
     case "INTERNAL_ERROR":
-      return "The Kstonebase API hit an unexpected error. These tools change nothing, so retry the read once; if it persists, report the evidence as unverified.";
+      return write
+        ? ENGINEERING_WRITE_INTERNAL_ERROR
+        : "The Kstonebase API hit an unexpected error. These tools change nothing, so retry the read once; if it persists, report the evidence as unverified.";
+    // Evidence, assessment-save and reviewed-action refusals (MT-I13).
+    case "STALE_VERSION":
+      return "Someone changed this after your read (details.currentVersion), so nothing was changed. Read the current links or action (list_engineering_links, read_engineering_action), check that the change still applies, then retry with its version.";
+    case "IDEMPOTENCY_KEY_REUSED":
+      return "This idempotencyKey was already used for a different request, so nothing was changed. Reuse a key only to retry the exact same request; use a new key for a new change.";
+    case "LINK_LIMIT_REACHED":
+      return "The card already has the maximum number of evidence links (details.limit). Remove one with unlink_engineering_evidence before linking another.";
+    case "LINK_NOT_FOUND":
+      return "No such evidence link on this card. Use a link id returned by list_engineering_links for the same card; never guess ids.";
+    case "ARTIFACT_NOT_FOUND":
+      return "No such artifact in that CI run. Read the run with read_ci_run including artifacts, then link it as <binding>:<run id>:<artifact id>.";
+    case "DEPLOYMENT_NOT_FOUND":
+      return "No such deployment in that environment. Use an id from list_deployments, linked as <environment>:<deployment id>.";
+    case "ASSESSMENT_NOT_FOUND":
+      return "No usable assessment of this card (details.itemId). You can save only your own assessment of that card from assess_board_items within 30 minutes, and board.complete cites only a saved one. Run assess_board_items again, save the result with save_board_item_assessment, then retry.";
+    case "ITEM_ARCHIVED":
+      return "The work item is archived (details.itemId), so no evidence, assessment or action can be recorded for it. Report it; only the Workspace Owner can restore it.";
+    case "COMPLETION_NOT_ELIGIBLE":
+      return "This card cannot be proposed for Done (details.itemId, details.problem, details.state or details.verdict). Run assess_board_items again, save an eligible fresh assessment with save_board_item_assessment, then propose.";
+    case "ACTION_CONFLICT":
+      return "An action for the same target is already live (details.actionId), so nothing was proposed. Read it with read_engineering_action instead of proposing again.";
+    case "ACTION_STALE":
+      return "The reviewed state changed (details.changed), so nothing was changed and this action can no longer run. Propose again only if the person still wants it.";
+    case "ACTION_EXPIRED":
+      return "The proposal expired before anyone confirmed it, so nothing was changed. Propose again only if the person still wants it.";
+    case "ACTION_STATE_CONFLICT":
+      return "The action is no longer proposed (details.state), so it cannot be cancelled. Read it with read_engineering_action and report its state.";
+    case "ACTION_ACTOR_REQUIRED":
+      return "Only the acting person, whose account proposed the action, can cancel it. Report it; they can cancel or decline it on the review page.";
+    case "ACTION_NOT_FOUND":
+      return "No such action of this Product, or you cannot read it. Use an id and Product returned by propose_engineering_action or list_engineering_actions; never guess ids.";
+    case "HUMAN_CONFIRMATION_REQUIRED":
+      return "A person must confirm it on the Kstonebase review page with their own account. No tool can confirm, decline, approve or check an action.";
+    case "PULL_REQUEST_EXISTS":
+      return "An open pull request already joins these branches (details.number). Read it with read_pull_request and propose an update to it instead of another pull request.";
+    case "PULL_REQUEST_NOT_OPEN":
+      return "The pull request is not open (details.state), so it cannot be changed or merged. Read it with read_pull_request and report its state.";
+    case "PULL_REQUEST_DRAFT":
+      return "The pull request is a draft, so it cannot be merged. Report it; its author must mark it ready for review first.";
+    case "PULL_REQUEST_NOT_MERGEABLE":
+      return "The provider cannot merge the pull request now (details.problem: conflicts, missing reviews or failing required checks). Report it; protections and policies are never bypassed.";
+    case "INVALID_REFERENCE":
+      return "The pipeline of this CI binding cannot be dispatched as configured (details.field). Report it; only people change delivery settings, in Kstonebase.";
     default:
       return undefined;
   }
+}
+
+// ──── Proposal result text (ME5, MT-I12) ───────────────────────────────────
+
+const PROVIDER_NAMES: Readonly<Record<string, string>> = { github: "GitHub", azure_devops: "Azure DevOps" };
+
+/**
+ * The second text item of a successful `propose_engineering_action` (ME5):
+ * nothing changed yet, a person confirms it at the absolute review link,
+ * before it expires. `origin` is the transport's public Website origin
+ * (hosted/session: their own; the package: its configured Kstonebase URL);
+ * the API's `reviewUrl` is a path on it. An idempotent replay of an action
+ * that is no longer proposed says so instead of claiming nothing changed.
+ */
+export function proposalText(action: unknown, origin: string): string {
+  const a =
+    action !== null && typeof action === "object" && !Array.isArray(action)
+      ? (action as Record<string, unknown>)
+      : {};
+  const base = origin.replace(/\/+$/, "");
+  let link: string | null = null;
+  if (typeof a.reviewUrl === "string" && /^\/[A-Za-z0-9_-][A-Za-z0-9/_-]{0,199}$/.test(a.reviewUrl)) link = `${base}${a.reviewUrl}`;
+  else if (typeof a.id === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(a.id)) link = `${base}/engineering/actions/${a.id}`;
+  const where = link ? `: ${link}.` : ".";
+  if (typeof a.state === "string" && a.state !== "proposed") {
+    const state = (ENGINEERING_ACTION_STATES as readonly string[]).includes(a.state) ? a.state : "no longer proposed";
+    return `This proposal already exists and is ${state} now; this call changed nothing. Read it with read_engineering_action and report its state as it reads; never propose it again on your own. Its review page in Kstonebase${where}`;
+  }
+  const lead =
+    a.kind === "board.complete"
+      ? "Proposed only. No card was moved."
+      : `Proposed only. Nothing was changed in ${typeof a.provider === "string" && Object.hasOwn(PROVIDER_NAMES, a.provider) ? PROVIDER_NAMES[a.provider] : "the provider"}.`;
+  const expires =
+    typeof a.expiresAt === "string" && /^[0-9][0-9T:.+\-Z ]{9,39}$/.test(a.expiresAt)
+      ? ` Confirmation expires at ${a.expiresAt}.`
+      : "";
+  return `${lead} A person must review and confirm it in Kstonebase${where}${expires}`;
 }

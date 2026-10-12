@@ -763,22 +763,28 @@ export class KstonebaseClient {
   }
 
   // ────────────────────────────────────────────────────────────────────
-  // Engineering tools (MCP › mcp-engineering-tools.md, PBI 230). The shared
-  // catalog builds the API `/mcp/…` request; the Website proxies it under
-  // `/api/mcp/…`. Every one of them reads (the assessment POST included),
-  // so no policy precondition is ever sent. Errors map in "engineering"
-  // mode (ME6).
+  // Engineering tools (MCP › mcp-engineering-tools.md, PBIs 230 and 239).
+  // The shared catalog builds the API `/mcp/…` request; the Website proxies
+  // it under `/api/mcp/…`. Reads (the read-only assessment POST included)
+  // never carry a policy precondition; writes (MT-I12) carry the agent's
+  // expectedPolicyRevision only as the header. Errors map in "engineering"
+  // mode, or "engineering-write" for writes (ME6, MT-I13).
   // ────────────────────────────────────────────────────────────────────
 
-  /** One engineering read: GET, or the read-only assessment POST. */
+  /** One engineering request: a read, or a write with its write options. */
   engineeringRequest(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     mcpPath: string,
     body?: Record<string, unknown>,
+    options: WriteOptions & { write?: boolean } = {},
   ): Promise<ApiResponse<unknown>> {
     const path = `/api${mcpPath}`;
-    if (method === "GET") return this.getJson(path, "engineering");
-    return this.sendJson("POST", path, body, "engineering");
+    const mode: ErrorMappingMode = options.write ? "engineering-write" : "engineering";
+    if (method === "GET") return this.getJson(path, mode);
+    // Only a write ever sends the policy precondition.
+    const writeOptions: WriteOptions =
+      options.write && options.policyRevision !== undefined ? { policyRevision: options.policyRevision } : {};
+    return this.sendJson(method, path, body, mode, writeOptions);
   }
 
   /** Convenience for endpoints that never send If-None-Match — narrows the

@@ -192,6 +192,26 @@ const RESOLVED_FIXTURE = {
   provenance: { provider: "github", fetchedAt: "2026-10-11T12:00:00Z", partial: false, truncated: false, omissions: [], redactions: 0 },
 };
 const ASSESSMENT_FIXTURE = { computedAt: "2026-10-11T12:00:00Z", items: [], failures: [{ itemId: "bi_1", code: "NOT_A_PBI", reason: null }], complete: true };
+// Engineering writes (MT-I12, PBI 239).
+const LINK_FIXTURE = {
+  version: 1,
+  link: { id: "ln_1", productId: "p_1", kind: "pull_request", externalId: "14", verification: "verified", source: "manual", available: true },
+  replayed: false,
+};
+const UNLINK_FIXTURE = { version: 2, deleted: true };
+const ACTION_FIXTURE = {
+  id: "ea_1",
+  kind: "pull_request.merge",
+  state: "proposed",
+  provider: "github",
+  reviewUrl: "/engineering/actions/ea_1",
+  expiresAt: "2026-10-11T12:30:00Z",
+  version: 1,
+  replayed: false,
+};
+const ACTION_STATE_ERROR = {
+  error: { code: "CONFLICT", message: "The action is no longer proposed.", details: { code: "ACTION_STATE_CONFLICT", state: "running" } },
+};
 const DELEGATION_ERROR = {
   error: {
     code: "FORBIDDEN",
@@ -208,6 +228,11 @@ function route(method: string, path: string): { status: number; json?: unknown; 
   if (method === "POST" && path === "/api/mcp/workspaces/ws_1/board/engineering/assessments") {
     return { status: 200, json: ASSESSMENT_FIXTURE };
   }
+  const links = "/api/mcp/workspaces/ws_1/board/items/bi_1/engineering/links";
+  if (method === "POST" && path === links) return { status: 201, json: LINK_FIXTURE };
+  if (method === "DELETE" && path === `${links}/ln_1?expectedVersion=1`) return { status: 200, json: UNLINK_FIXTURE };
+  if (method === "POST" && path === `${product}/actions`) return { status: 201, json: ACTION_FIXTURE };
+  if (method === "POST" && path === `${product}/actions/ea_1/cancel`) return { status: 409, json: ACTION_STATE_ERROR };
   // An older deployment: no engineering route, a plain-text 404.
   if (path.startsWith("/api/mcp/products/p_old/")) return { status: 404, raw: "404 page not found" };
   const collection = "/api/mcp/specifications/s_1/open-questions";
@@ -373,12 +398,39 @@ const BASE_SCRIPT: Script = [
 
 // Engineering reads (PBI 230): a provider read with the Product notice, the
 // read-only assessment POST with the Workspace notice, a delegation refusal
-// and an older deployment without the routes.
+// and an older deployment without the routes. Then the writes (PBI 239): a
+// link with a policy revision, an unlink DELETE without one, a proposal with
+// its "Proposed only" text, and a refused cancellation.
 const ENGINEERING_SCRIPT: Script = [
   ["resolve_revision", { productId: "p_1", ref: "main" }],
   ["assess_board_items", { workspaceId: "ws_1", itemIds: ["bi_1"] }],
   ["list_ci_runs", { productId: "p_1" }],
   ["read_repository_file", { productId: "p_old", sha: SHA, path: "README.md" }],
+  [
+    "link_engineering_evidence",
+    {
+      workspaceId: "ws_1",
+      itemId: "bi_1",
+      productId: "p_1",
+      kind: "pull_request",
+      externalId: "14",
+      expectedVersion: 0,
+      idempotencyKey: "parity-link-14",
+      expectedPolicyRevision: WS_REVISION,
+    },
+  ],
+  ["unlink_engineering_evidence", { workspaceId: "ws_1", itemId: "bi_1", linkId: "ln_1", expectedVersion: 1 }],
+  [
+    "propose_engineering_action",
+    {
+      productId: "p_1",
+      kind: "pull_request.merge",
+      input: { number: 14, strategy: "squash" },
+      idempotencyKey: "parity-merge-14",
+      expectedPolicyRevision: SPEC_REVISION,
+    },
+  ],
+  ["cancel_engineering_action", { productId: "p_1", actionId: "ea_1", expectedVersion: 1 }],
 ];
 
 async function inMemorySession(script?: Script): Promise<SessionRecord> {
@@ -646,7 +698,7 @@ describe("stdio and HTTP transports", () => {
   );
 
   it(
-    "forward engineering reads identically: results, notices, refusals and requests (PBI 230)",
+    "forward engineering reads and writes identically: results, notices, refusals and requests (PBIs 230, 239)",
     async () => {
       const memory = await inMemorySession(ENGINEERING_SCRIPT);
       const http = await httpSession(ENGINEERING_SCRIPT);
@@ -672,6 +724,23 @@ describe("stdio and HTTP transports", () => {
         hint: DELEGATION_ERROR.error.details.hint,
       });
       expect(memory.results[3]).toMatchObject({ isError: true, structuredContent: { code: "ENGINEERING_UNSUPPORTED" } });
+      // Writes (MT-I12): API bodies unchanged with their notices; the
+      // proposal adds its ME5 text with the absolute review link on the
+      // configured Kstonebase URL; a refusal keeps the allowlisted details.
+      expect(memory.results[4]).toMatchObject({ isError: false, structuredContent: LINK_FIXTURE });
+      expect((memory.results[4] as { content: unknown[] }).content[1]).toEqual({ type: "text", text: WS_NOTICE });
+      expect(memory.results[5]).toMatchObject({ isError: false, structuredContent: UNLINK_FIXTURE });
+      expect(memory.results[6]).toMatchObject({ isError: false, structuredContent: ACTION_FIXTURE });
+      const proposal = (memory.results[6] as { content: Array<{ text: string }> }).content;
+      expect(proposal).toHaveLength(3);
+      expect(proposal[1].text).toBe(
+        `Proposed only. Nothing was changed in GitHub. A person must review and confirm it in Kstonebase: ${apiUrl}/engineering/actions/ea_1. Confirmation expires at 2026-10-11T12:30:00Z.`,
+      );
+      expect(proposal[2].text).toBe(productNotice);
+      expect(memory.results[7]).toMatchObject({
+        isError: true,
+        structuredContent: { code: "ACTION_STATE_CONFLICT", details: { state: "running" } },
+      });
 
       const get = (path: string) => ({
         method: "GET",
@@ -695,9 +764,50 @@ describe("stdio and HTTP transports", () => {
         get(`/api/mcp/agent-policy?target=${encodeURIComponent("workspace:ws_1")}`),
         get("/api/mcp/products/p_1/engineering/ci/runs"),
         get(`/api/mcp/products/p_old/engineering/file?sha=${SHA}&path=README.md`),
+        {
+          method: "POST",
+          path: "/api/mcp/workspaces/ws_1/board/items/bi_1/engineering/links",
+          authorization: `Bearer ${TOKEN}`,
+          cookie: undefined,
+          contentType: "application/json",
+          policyRevision: WS_REVISION,
+          body: { idempotencyKey: "parity-link-14", expectedVersion: 0, productId: "p_1", kind: "pull_request", externalId: "14" },
+        },
+        get(`/api/mcp/agent-policy?target=${encodeURIComponent("workspace:ws_1")}&instructions=omit`),
+        {
+          method: "DELETE",
+          path: "/api/mcp/workspaces/ws_1/board/items/bi_1/engineering/links/ln_1?expectedVersion=1",
+          authorization: `Bearer ${TOKEN}`,
+          cookie: undefined,
+          contentType: undefined,
+          body: undefined,
+        },
+        get(`/api/mcp/agent-policy?target=${encodeURIComponent("workspace:ws_1")}&instructions=omit`),
+        {
+          method: "POST",
+          path: "/api/mcp/products/p_1/engineering/actions",
+          authorization: `Bearer ${TOKEN}`,
+          cookie: undefined,
+          contentType: "application/json",
+          policyRevision: SPEC_REVISION,
+          body: { idempotencyKey: "parity-merge-14", kind: "pull_request.merge", input: { number: 14, strategy: "squash" } },
+        },
+        get(`/api/mcp/agent-policy?target=${encodeURIComponent("product:p_1")}`),
+        {
+          method: "POST",
+          path: "/api/mcp/products/p_1/engineering/actions/ea_1/cancel",
+          authorization: `Bearer ${TOKEN}`,
+          cookie: undefined,
+          contentType: "application/json",
+          body: { expectedVersion: 1 },
+        },
       ]);
-      // Engineering tools only read: no policy precondition ever.
-      expect(memory.requests.filter((r) => r.policyRevision !== undefined)).toHaveLength(0);
+      // Reads never carry a policy precondition; writes only when the agent
+      // passed one, and only as the header.
+      expect(memory.requests.filter((r) => r.policyRevision !== undefined).map((r) => r.path)).toEqual([
+        "/api/mcp/workspaces/ws_1/board/items/bi_1/engineering/links",
+        "/api/mcp/products/p_1/engineering/actions",
+      ]);
     },
     60_000,
   );
