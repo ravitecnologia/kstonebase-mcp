@@ -1,6 +1,8 @@
-// Engineering discovery, read and assessment tools of the standalone package
-// (Kstonebase MCP › features/mcp-engineering-tools.md ME1–ME8, PBI 230 / D1;
-// API › features/agent-engineering-contract.md §1–§7).
+// Engineering tools of the standalone package: discovery, reads and
+// assessment (Kstonebase MCP › features/mcp-engineering-tools.md ME1–ME8,
+// PBI 230 / D1), then evidence links, assessment saves and reviewed-action
+// proposals (MT-I12–MT-I14, PBI 239 / D3; API ›
+// features/agent-engineering-contract.md §1–§8).
 //
 // Names, titles, descriptions, annotations, input schemas and API requests
 // come from the shared catalog (./engineering-catalog), the same file the
@@ -8,8 +10,11 @@
 // --http transports advertise exactly what every other transport does (ME1).
 // Results are the API bodies, unchanged; every successful result carries the
 // Workspace instructions notice of the Product or Workspace it addresses
-// (ME7). The API decides delegation, credential scope, consent and provider
-// grants; nothing here widens access, retries or writes.
+// (ME7). Writes send the agent's expectedPolicyRevision only as the
+// X-Kstonebase-Policy-Revision header; a proposal adds the "Proposed only"
+// text with its absolute review link on the configured Kstonebase URL (ME5).
+// The API decides delegation, credential scope, consent and provider grants;
+// nothing here widens access, retries, confirms or executes.
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -19,6 +24,7 @@ import {
   ENGINEERING_WORKSPACE_TOOLS,
   EngineeringArgumentError,
   buildEngineeringRequest,
+  proposalText,
   registerEngineeringCatalog,
 } from "./engineering-catalog.js";
 import { McpToolError } from "./errors.js";
@@ -82,8 +88,15 @@ export function registerEngineeringTools(
           request.method,
           request.path,
           request.body,
+          { write: request.write === true, policyRevision: request.policyRevision },
         );
-        return ok(res.body);
+        const result = ok(res.body);
+        if (name === "propose_engineering_action") {
+          // ME5: nothing changed yet; a person confirms it on the Website
+          // this package talks to (its configured Kstonebase URL).
+          result.content.push({ type: "text", text: proposalText(res.body, config.apiUrl) });
+        }
+        return result;
       },
     ),
   );

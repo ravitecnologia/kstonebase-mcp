@@ -736,6 +736,97 @@
         "open_world_justification": "Reads the Product's repository, CI or deployment provider (GitHub or Azure DevOps) server-side through the acting user's own connection, within the user's engineering delegation; it never publishes data outward.",
         "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
       }
+    },
+    "link_engineering_evidence": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Links one verified piece of engineering evidence (a branch, commit, pull request, CI run, artifact or deployment) to a Board work item, which writes Kstonebase data.",
+        "open_world_justification": "The evidence is read through the acting user's own repository connection and stored only as a private Kstonebase record; nothing is changed or published in the repository or anywhere else.",
+        "destructive_justification": "Only adds a link guarded by the card's evidence version; it never changes the card's state, and linking already linked evidence or retrying with the same idempotency key adds nothing."
+      }
+    },
+    "unlink_engineering_evidence": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Removes an evidence link from a Board work item, which writes Kstonebase data.",
+        "open_world_justification": "Only records private Kstonebase data; Kstonebase makes no external change and publishes nothing outward.",
+        "destructive_justification": "Removes an existing link (kept in the card's history), guarded by the card's evidence version; removing an already removed link is a no-op."
+      }
+    },
+    "save_board_item_assessment": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Saves the user's own recent assessment of a Board PBI as an immutable record and appends one note to the card, which writes Kstonebase data.",
+        "open_world_justification": "Makes no provider call; it only records private Kstonebase data and publishes nothing outward.",
+        "destructive_justification": "Only adds a saved assessment and a note; it never moves the card or changes existing data, and saving an already saved assessment adds nothing."
+      }
+    },
+    "propose_engineering_action": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Stores a proposal of a reviewed engineering action (a pull request change, a merge, a pipeline run or moving cards to Done) in Kstonebase, which writes Kstonebase data.",
+        "open_world_justification": "Only stores a proposal in Kstonebase; nothing happens in GitHub, Azure DevOps or on the Board until a person confirms the exact change on its Kstonebase review page with their own account.",
+        "destructive_justification": "Only adds a proposal that expires unless a person confirms it; it never executes, changes or deletes anything, and a retry with the same idempotency key adds nothing."
+      }
+    },
+    "read_engineering_action": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only reads one reviewed engineering action and its outcome; it creates, changes or deletes nothing.",
+        "open_world_justification": "Only reads private Kstonebase records; it makes no provider call and does not publish data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "list_engineering_actions": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only lists the reviewed engineering actions of a Workspace's Products; it creates, changes or deletes nothing.",
+        "open_world_justification": "Only reads private Kstonebase records; it makes no provider call and does not publish data outward.",
+        "destructive_justification": "Never writes, so it cannot overwrite or delete anything."
+      }
+    },
+    "cancel_engineering_action": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Cancels a proposed engineering action that nobody has confirmed, which writes Kstonebase data.",
+        "open_world_justification": "Only ends a private Kstonebase proposal; it never calls GitHub, Azure DevOps or any other provider.",
+        "destructive_justification": "Ends a proposal so it can never run, guarded by the action's version; it never stops or undoes a change already sent to a provider."
+      }
     }
   },
   "test_cases": [

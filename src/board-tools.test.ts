@@ -1400,9 +1400,12 @@ describe("Board import report tools", () => {
     expect(names.filter((n) => /import/.test(n)).sort()).toEqual(["list_board_imports", "read_board_import"]);
     // discover_engineering_links (PBI 230) discovers a card's candidate
     // pull requests, not Azure DevOps boards; it is an engineering read.
+    // cancel_engineering_action (PBI 239) cancels an unconfirmed engineering
+    // proposal, never an import.
+    const engineering = new Set(["discover_engineering_links", "cancel_engineering_action"]);
     expect(
       names.filter(
-        (n) => n !== "discover_engineering_links" && /connection|discover|mapping|confirm|cancel|retry|azure|devops/i.test(n),
+        (n) => !engineering.has(n) && /connection|discover|mapping|confirm|cancel|retry|azure|devops/i.test(n),
       ),
     ).toEqual([]);
     for (const tool of tools) {

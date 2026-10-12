@@ -676,6 +676,34 @@ describe("agent-docs template", () => {
     }
   });
 
+  it("lists the engineering reads as reads and the engineering writes as writes (MT-I14)", () => {
+    const productWrites = ["propose_engineering_action", "cancel_engineering_action"];
+    const boardWrites = ["link_engineering_evidence", "unlink_engineering_evidence", "save_board_item_assessment"];
+    const reads = ["get_engineering_capabilities", "assess_board_items", "read_engineering_action", "list_engineering_actions"];
+    const shapes: AgentDocsBinding[] = [
+      { productId: "P", productName: "f", productType: "free", workspaceId: null, workspaceName: null },
+      { productId: null, productName: null, productType: null, workspaceId: "W", workspaceName: "ws" },
+      { productId: "P", productName: "w", productType: "web_application", workspaceId: "W", workspaceName: "ws" },
+    ];
+    for (const binding of shapes) {
+      const inv = buildToolInventory(binding);
+      expect(inv.reads).toEqual(expect.arrayContaining(reads));
+      expect(inv.writes).toEqual(expect.arrayContaining(productWrites));
+      for (const tool of [...productWrites, ...boardWrites]) expect(inv.reads).not.toContain(tool);
+      for (const tool of reads) expect(inv.writes).not.toContain(tool);
+      // The evidence and assessment-save writes act on a Workspace Board.
+      for (const tool of boardWrites) {
+        if (binding.workspaceId) expect(inv.writes).toContain(tool);
+        else expect(inv.writes).not.toContain(tool);
+      }
+      const body = renderAgentDocs(binding);
+      const writesAt = body.indexOf("Writes:");
+      expect(body.indexOf("- `read_engineering_action`")).toBeGreaterThan(-1);
+      expect(body.indexOf("- `read_engineering_action`")).toBeLessThan(writesAt);
+      expect(body.indexOf("- `propose_engineering_action`")).toBeGreaterThan(writesAt);
+    }
+  });
+
   it("puts the open-question tools into the planned CLAUDE.md and AGENTS.md", async () => {
     const client = fakeClient(baseState);
     const result = planned(

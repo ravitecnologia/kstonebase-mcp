@@ -88,6 +88,12 @@ const WRITE_TOOLS = [
   "append_board_item_note",
   "archive_board_item",
   "restore_board_item",
+  // Engineering writes (MCP › mcp-engineering-tools.md MT-I12, PBI 239).
+  "link_engineering_evidence",
+  "unlink_engineering_evidence",
+  "save_board_item_assessment",
+  "propose_engineering_action",
+  "cancel_engineering_action",
 ];
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -342,8 +348,9 @@ describe("get_effective_instructions — discovery", () => {
     const { fetcher } = stubApi();
     const { mcp, close } = await connect(fetcher);
     const { tools } = await mcp.listTools();
-    // 41 tools, plus the 20 engineering reads of PBI 230 (never writes).
-    expect(tools).toHaveLength(61);
+    // 41 tools, plus the 20 engineering reads of PBI 230 and the 7
+    // engineering tools of PBI 239 (5 writes, 2 reads).
+    expect(tools).toHaveLength(68);
     for (const tool of tools) {
       const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
       if (WRITE_TOOLS.includes(tool.name)) {
@@ -877,6 +884,17 @@ describe("expectedPolicyRevision", () => {
     ["append_board_item_note", { itemId: "bi_1", body: "Evidence", idempotencyKey: "key-00000002" }],
     ["archive_board_item", { itemId: "bi_1", expectedVersion: 2 }],
     ["restore_board_item", { itemId: "bi_1", expectedVersion: 2 }],
+    [
+      "link_engineering_evidence",
+      { itemId: "bi_1", productId: "p_1", kind: "pull_request", externalId: "14", expectedVersion: 0, idempotencyKey: "key-00000003" },
+    ],
+    ["unlink_engineering_evidence", { itemId: "bi_1", linkId: "ln_1", expectedVersion: 2 }],
+    ["save_board_item_assessment", { itemId: "bi_1", assessmentId: "as_1", idempotencyKey: "key-00000004" }],
+    [
+      "propose_engineering_action",
+      { productId: "p_1", kind: "pull_request.merge", input: { number: 14, strategy: "squash" }, idempotencyKey: "key-00000005" },
+    ],
+    ["cancel_engineering_action", { productId: "p_1", actionId: "ea_1", expectedVersion: 1 }],
   ];
 
   it("covers every API write tool", () => {
@@ -900,7 +918,8 @@ describe("expectedPolicyRevision", () => {
       );
       expect(req.rawBody ?? "", req.path).not.toContain(REV_WS);
       expect(req.rawBody ?? "", req.path).not.toContain("expectedPolicyRevision");
-      expect(req.query.toString(), req.path).toBe("");
+      // Only the evidence unlink carries its version in the query (AE-I43).
+      expect(req.query.toString(), req.path).toBe(req.method === "DELETE" && req.path.endsWith("/links/ln_1") ? "expectedVersion=2" : "");
     }
     // The resolver GETs never carry it.
     for (const req of policyCalls()) expect(req.headers).not.toHaveProperty("x-kstonebase-policy-revision");

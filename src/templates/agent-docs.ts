@@ -4,7 +4,11 @@
 // purpose: users append their own project-specific guidance after the
 // generated body.
 
-import { ENGINEERING_TOOL_NAMES } from "../engineering-catalog.js";
+import {
+  ENGINEERING_TOOL_NAMES,
+  ENGINEERING_WORKSPACE_TOOLS,
+  ENGINEERING_WRITE_TOOLS,
+} from "../engineering-catalog.js";
 
 export type SpecManagementType = "free" | "web_application";
 
@@ -211,10 +215,21 @@ export function buildToolInventory(binding: AgentDocsBinding): ToolInventory {
     reads.push(...BOARD_READ_TOOLS);
     writes.push(...BOARD_WRITE_TOOLS);
   }
-  // Engineering discovery, read and assessment tools (MCP spec
-  // "mcp-engineering-tools", PBI 230): reads only, for every binding shape;
-  // they need a credential with engineering access.
-  reads.push(...ENGINEERING_TOOL_NAMES);
+  // Engineering tools (MCP spec "mcp-engineering-tools", PBIs 230 and 239);
+  // they need a credential with engineering access. The reads (the
+  // read-only assessment included) are listed for every binding shape. Of
+  // the writes (MT-I14), the action proposal and cancellation address a
+  // Product and are listed for every binding shape; the evidence and
+  // assessment-save writes act on a Workspace Board, so, like the Board
+  // writes, they are listed for Workspace bindings only.
+  reads.push(...ENGINEERING_TOOL_NAMES.filter((name) => !ENGINEERING_WRITE_TOOLS.has(name)));
+  writes.push(
+    ...ENGINEERING_TOOL_NAMES.filter(
+      (name) =>
+        ENGINEERING_WRITE_TOOLS.has(name) &&
+        (Boolean(binding.workspaceId) || !ENGINEERING_WORKSPACE_TOOLS.has(name)),
+    ),
+  );
   return { reads, writes };
 }
 

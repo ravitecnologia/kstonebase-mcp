@@ -763,22 +763,28 @@ export class KstonebaseClient {
   }
 
   // ────────────────────────────────────────────────────────────────────
-  // Engineering tools (MCP › mcp-engineering-tools.md, PBI 230). The shared
-  // catalog builds the API `/mcp/…` request; the Website proxies it under
-  // `/api/mcp/…`. Every one of them reads (the assessment POST included),
-  // so no policy precondition is ever sent. Errors map in "engineering"
-  // mode (ME6).
+  // Engineering tools (MCP › mcp-engineering-tools.md, PBIs 230 and 239).
+  // The shared catalog builds the API `/mcp/…` request; the Website proxies
+  // it under `/api/mcp/…`. Reads (the read-only assessment POST included)
+  // never carry a policy precondition; writes (MT-I12) carry the agent's
+  // expectedPolicyRevision only as the header. Errors map in "engineering"
+  // mode, or "engineering-write" for writes (ME6, MT-I13).
   // ────────────────────────────────────────────────────────────────────
 
-  /** One engineering read: GET, or the read-only assessment POST. */
+  /** One engineering request: a read, or a write with its write options. */
   engineeringRequest(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     mcpPath: string,
     body?: Record<string, unknown>,
+    options: WriteOptions & { write?: boolean } = {},
   ): Promise<ApiResponse<unknown>> {
     const path = `/api${mcpPath}`;
-    if (method === "GET") return this.getJson(path, "engineering");
-    return this.sendJson("POST", path, body, "engineering");
+    const mode: ErrorMappingMode = options.write ? "engineering-write" : "engineering";
+    if (method === "GET") return this.getJson(path, mode);
+    // Only a write ever sends the policy precondition.
+    const writeOptions: WriteOptions =
+      options.write && options.policyRevision !== undefined ? { policyRevision: options.policyRevision } : {};
+    return this.sendJson(method, path, body, mode, writeOptions);
   }
 
   /** Convenience for endpoints that never send If-None-Match — narrows the
@@ -830,7 +836,7 @@ export class KstonebaseClient {
       mode,
     );
 
-    const text = await res.text();
+    const text = await this.readBody(res, mode);
     const parsed =
       text.length > 0
         ? (safeParseJson(text) as ApiErrorBody | unknown)
@@ -1112,7 +1118,7 @@ export class KstonebaseClient {
       };
     }
 
-    const text = await res.text();
+    const text = await this.readBody(res, mode);
     const body =
       text.length > 0
         ? (safeParseJson(text) as ApiErrorBody | unknown)
@@ -1127,6 +1133,24 @@ export class KstonebaseClient {
       etag: res.headers.get("etag"),
       status: res.status,
     };
+  }
+
+  /**
+   * The response body. For an engineering request, a body that fails to
+   * arrive after the headers is INTERNAL_ERROR with the engineering
+   * remediation (a write's says it may or may not have been applied).
+   */
+  private async readBody(res: Response, mode: ErrorMappingMode): Promise<string> {
+    if (mode !== "engineering" && mode !== "engineering-write") return res.text();
+    try {
+      return await res.text();
+    } catch (err) {
+      throw new McpToolError(
+        "INTERNAL_ERROR",
+        `The response did not complete: ${(err as Error)?.message ?? String(err)}`,
+        boardRemediation("INTERNAL_ERROR", mode),
+      );
+    }
   }
 
   /**

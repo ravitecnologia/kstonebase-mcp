@@ -91,7 +91,27 @@ export type McpStructuredCode =
   | "ENVIRONMENT_NOT_FOUND"
   | "STAGE_NOT_FOUND"
   | "PRODUCT_NOT_FOUND"
-  | "PRODUCT_ARCHIVED";
+  | "PRODUCT_ARCHIVED"
+  // Engineering evidence, assessment-save and reviewed-action tools (MCP ›
+  // mcp-engineering-tools.md MT-I13). STALE_VERSION, IDEMPOTENCY_KEY_REUSED,
+  // LINK_LIMIT_REACHED and ITEM_ARCHIVED are shared with other tools above.
+  | "ACTION_CONFLICT"
+  | "ACTION_STATE_CONFLICT"
+  | "ACTION_ACTOR_REQUIRED"
+  | "ACTION_NOT_FOUND"
+  | "ACTION_STALE"
+  | "ACTION_EXPIRED"
+  | "HUMAN_CONFIRMATION_REQUIRED"
+  | "LINK_NOT_FOUND"
+  | "ARTIFACT_NOT_FOUND"
+  | "DEPLOYMENT_NOT_FOUND"
+  | "ASSESSMENT_NOT_FOUND"
+  | "COMPLETION_NOT_ELIGIBLE"
+  | "PULL_REQUEST_EXISTS"
+  | "PULL_REQUEST_NOT_OPEN"
+  | "PULL_REQUEST_DRAFT"
+  | "PULL_REQUEST_NOT_MERGEABLE"
+  | "INVALID_REFERENCE";
 
 export interface ApiErrorBody {
   error?: {
@@ -150,10 +170,14 @@ export type McpFailureDetails = Partial<
  * remediations worded for Owner-only reports. "engineering" is used by the
  * engineering tools (MCP › mcp-engineering-tools.md ME6): the API's
  * `details.code` is the tool code and the engineering remediations and
- * details apply. "default" keeps the existing vocabulary for every other
- * tool.
+ * details apply. "engineering-write" is the same for the engineering write
+ * tools (MT-I13), whose INTERNAL_ERROR says the change may have applied.
+ * "default" keeps the existing vocabulary for every other tool.
  */
-export type ErrorMappingMode = "default" | "board" | "board-import" | "engineering";
+export type ErrorMappingMode = "default" | "board" | "board-import" | "engineering" | "engineering-write";
+
+const isEngineeringMode = (mode: ErrorMappingMode): mode is "engineering" | "engineering-write" =>
+  mode === "engineering" || mode === "engineering-write";
 
 export interface McpFailure {
   code: McpStructuredCode;
@@ -316,6 +340,23 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
   STAGE_NOT_FOUND: engineeringText("STAGE_NOT_FOUND"),
   PRODUCT_NOT_FOUND: engineeringText("PRODUCT_NOT_FOUND"),
   PRODUCT_ARCHIVED: engineeringText("PRODUCT_ARCHIVED"),
+  ACTION_CONFLICT: engineeringText("ACTION_CONFLICT"),
+  ACTION_STATE_CONFLICT: engineeringText("ACTION_STATE_CONFLICT"),
+  ACTION_ACTOR_REQUIRED: engineeringText("ACTION_ACTOR_REQUIRED"),
+  ACTION_NOT_FOUND: engineeringText("ACTION_NOT_FOUND"),
+  ACTION_STALE: engineeringText("ACTION_STALE"),
+  ACTION_EXPIRED: engineeringText("ACTION_EXPIRED"),
+  HUMAN_CONFIRMATION_REQUIRED: engineeringText("HUMAN_CONFIRMATION_REQUIRED"),
+  LINK_NOT_FOUND: engineeringText("LINK_NOT_FOUND"),
+  ARTIFACT_NOT_FOUND: engineeringText("ARTIFACT_NOT_FOUND"),
+  DEPLOYMENT_NOT_FOUND: engineeringText("DEPLOYMENT_NOT_FOUND"),
+  ASSESSMENT_NOT_FOUND: engineeringText("ASSESSMENT_NOT_FOUND"),
+  COMPLETION_NOT_ELIGIBLE: engineeringText("COMPLETION_NOT_ELIGIBLE"),
+  PULL_REQUEST_EXISTS: engineeringText("PULL_REQUEST_EXISTS"),
+  PULL_REQUEST_NOT_OPEN: engineeringText("PULL_REQUEST_NOT_OPEN"),
+  PULL_REQUEST_DRAFT: engineeringText("PULL_REQUEST_DRAFT"),
+  PULL_REQUEST_NOT_MERGEABLE: engineeringText("PULL_REQUEST_NOT_MERGEABLE"),
+  INVALID_REFERENCE: engineeringText("INVALID_REFERENCE"),
 };
 
 // Board-specific wording for shared codes (MCP › mcp-board-tools.md §2.1,
@@ -434,13 +475,13 @@ const BOARD_IMPORT_REMEDIATIONS: Partial<Record<McpStructuredCode, string>> = {
     "The Kstonebase API hit an unexpected error. Import report reads change nothing, so retry the read once; if it persists, contact support.",
 };
 
-/** The remediation a Board tool (or, in "board-import" mode, an import report tool; in "engineering" mode, an engineering tool) reports for `code`. */
+/** The remediation a Board tool (or, in "board-import" mode, an import report tool; in "engineering" / "engineering-write" mode, an engineering read / write tool) reports for `code`. */
 export function boardRemediation(
   code: McpStructuredCode,
   mode: ErrorMappingMode = "board",
 ): string {
-  if (mode === "engineering") {
-    return engineeringRemediation(code) ?? REMEDIATIONS[code];
+  if (isEngineeringMode(mode)) {
+    return engineeringRemediation(code, undefined, mode === "engineering-write") ?? REMEDIATIONS[code];
   }
   const forImport =
     mode === "board-import" ? BOARD_IMPORT_REMEDIATIONS[code] : undefined;
@@ -467,12 +508,16 @@ function pickEngineeringCode(
   status: number,
   apiCode: string | undefined,
   detailCode: string | undefined,
+  write: boolean,
 ): McpStructuredCode {
   const specific =
     lookupCode(ENGINEERING_DETAIL_CODES, detailCode) ??
     lookupCode(ENGINEERING_DETAIL_CODES, apiCode);
   if (specific) return specific;
   if (status === 400) return "VALIDATION_ERROR";
+  // A write answered by a 5xx without a Kstonebase engineering code (a
+  // gateway timeout, a proxy error page) may have applied (MT-I13).
+  if (write && status >= 500) return "INTERNAL_ERROR";
   if (status === 502 || status === 503 || status === 504) return "PROVIDER_UNAVAILABLE";
   return pickStructuredCode(status, apiCode, detailCode).code;
 }
@@ -539,21 +584,24 @@ export function mapApiError(
     body?.error?.message ?? `Request failed with status ${status}.`;
   const rawDetails = body?.error?.details;
   const detailCode = extractDetailCode(rawDetails);
-  if (mode === "engineering") {
-    // A server without the engineering routes answers a 404 without any
-    // Kstonebase error code (ME1): nothing was verified.
+  if (isEngineeringMode(mode)) {
+    // A server without the engineering routes (or without this method on
+    // one) answers a 404, 405 or 501 without any Kstonebase error code
+    // (ME1): nothing was verified or changed.
     const unsupported =
-      apiCode === undefined && detailCode === undefined && status === 404;
+      apiCode === undefined &&
+      detailCode === undefined &&
+      (status === 404 || status === 405 || status === 501);
     const code = unsupported
       ? "ENGINEERING_UNSUPPORTED"
-      : pickEngineeringCode(status, apiCode, detailCode);
+      : pickEngineeringCode(status, apiCode, detailCode, mode === "engineering-write");
     const details = pickDetails(rawDetails, ENGINEERING_DETAIL_KEYS);
     return new McpToolError(
       code,
       unsupported
         ? "This Kstonebase server does not provide the engineering tools."
         : apiMessage,
-      engineeringRemediation(code, details) ?? REMEDIATIONS[code],
+      engineeringRemediation(code, details, mode === "engineering-write") ?? REMEDIATIONS[code],
       details,
     );
   }
