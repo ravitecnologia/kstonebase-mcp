@@ -155,18 +155,26 @@ describe("create_product (PBI 271)", () => {
       expect(creates).toHaveLength(1);
       expect(creates[0]!.body).toEqual({ name: "Billing", specificationManagementType: "web_application" });
       expect(res.isError).toBe(true);
-      const failure = res.structuredContent as { code: string; message: string; details?: Record<string, unknown> };
-      // The existing default mapping classifies BAD_REQUEST + details.code
-      // PRODUCT_TYPE_UNSUPPORTED by status (pinned in errors.test.ts); the
-      // API's message and actionable hint reach the agent unchanged.
-      expect(failure.code).toBe("INTERNAL_ERROR");
+      const failure = res.structuredContent as {
+        code: string;
+        message: string;
+        remediation: string;
+        details?: Record<string, unknown>;
+      };
+      // Nothing was created: the refusal keeps its own code and remediation
+      // (never INTERNAL_ERROR's "may already have been applied").
+      expect(failure.code).toBe("PRODUCT_TYPE_UNSUPPORTED");
       expect(failure.message).toBe("New Products always use the flexible document model.");
+      expect(failure.remediation).toBe(
+        "New Products always use the flexible document model. Omit specificationManagementType.",
+      );
       expect(failure.details).toEqual({
         hint: "Omit specificationManagementType; new Products always use the flexible document model.",
       });
       const text = (res.content as Array<{ type: string; text: string }>)[0]!.text;
-      expect(text).toContain("New Products always use the flexible document model.");
+      expect(text.startsWith("PRODUCT_TYPE_UNSUPPORTED: New Products always use the flexible document model.")).toBe(true);
       expect(text).toContain("Omit specificationManagementType; new Products always use the flexible document model.");
+      expect(text).not.toContain("may already have been applied");
     } finally {
       await close();
     }

@@ -278,6 +278,26 @@ describe("mapApiError — PRODUCT_TYPE_UNSUPPORTED (PBI 271)", () => {
       "New Products always use the flexible document model. Omit specificationManagementType.",
     );
   });
+
+  it("reads PRODUCT_TYPE_UNSUPPORTED from details.code under BAD_REQUEST (was INTERNAL_ERROR) and keeps the API hint", () => {
+    const err = mapApiError(
+      400,
+      envelope("BAD_REQUEST", "New Products always use the flexible document model.", {
+        code: "PRODUCT_TYPE_UNSUPPORTED",
+        requested: "web_application",
+        supported: ["free"],
+        hint: "Omit specificationManagementType; new Products always use the flexible document model.",
+      }),
+    );
+    expect(err.code).toBe("PRODUCT_TYPE_UNSUPPORTED");
+    expect(err.message).toBe("New Products always use the flexible document model.");
+    expect(err.remediation).toBe(
+      "New Products always use the flexible document model. Omit specificationManagementType.",
+    );
+    expect(err.details).toEqual({
+      hint: "Omit specificationManagementType; new Products always use the flexible document model.",
+    });
+  });
 });
 
 describe("mapApiError — credential and scope vocabulary is unchanged (spec §6)", () => {
@@ -293,7 +313,6 @@ describe("mapApiError — credential and scope vocabulary is unchanged (spec §6
     ["expired as envelope code", 401, envelope("TOKEN_EXPIRED", "expired"), "TOKEN_EXPIRED"],
     ["insufficient without envelope code", 403, { error: { message: "m", details: { code: "TOKEN_SCOPE_INSUFFICIENT" } } }, "TOKEN_SCOPE_INSUFFICIENT"],
     ["not in workspace under FORBIDDEN", 403, envelope("FORBIDDEN", "m", { code: "NOT_IN_WORKSPACE" }), "TOKEN_SCOPE_MISMATCH"],
-    ["unsupported type under BAD_REQUEST", 400, envelope("BAD_REQUEST", "m", { code: "PRODUCT_TYPE_UNSUPPORTED", requested: "web_application" }), "INTERNAL_ERROR"],
   ];
 
   for (const [label, status, body, expected] of unchanged) {
