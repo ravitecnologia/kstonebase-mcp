@@ -508,12 +508,16 @@ function pickEngineeringCode(
   status: number,
   apiCode: string | undefined,
   detailCode: string | undefined,
+  write: boolean,
 ): McpStructuredCode {
   const specific =
     lookupCode(ENGINEERING_DETAIL_CODES, detailCode) ??
     lookupCode(ENGINEERING_DETAIL_CODES, apiCode);
   if (specific) return specific;
   if (status === 400) return "VALIDATION_ERROR";
+  // A write answered by a 5xx without a Kstonebase engineering code (a
+  // gateway timeout, a proxy error page) may have applied (MT-I13).
+  if (write && status >= 500) return "INTERNAL_ERROR";
   if (status === 502 || status === 503 || status === 504) return "PROVIDER_UNAVAILABLE";
   return pickStructuredCode(status, apiCode, detailCode).code;
 }
@@ -581,13 +585,16 @@ export function mapApiError(
   const rawDetails = body?.error?.details;
   const detailCode = extractDetailCode(rawDetails);
   if (isEngineeringMode(mode)) {
-    // A server without the engineering routes answers a 404 without any
-    // Kstonebase error code (ME1): nothing was verified.
+    // A server without the engineering routes (or without this method on
+    // one) answers a 404, 405 or 501 without any Kstonebase error code
+    // (ME1): nothing was verified or changed.
     const unsupported =
-      apiCode === undefined && detailCode === undefined && status === 404;
+      apiCode === undefined &&
+      detailCode === undefined &&
+      (status === 404 || status === 405 || status === 501);
     const code = unsupported
       ? "ENGINEERING_UNSUPPORTED"
-      : pickEngineeringCode(status, apiCode, detailCode);
+      : pickEngineeringCode(status, apiCode, detailCode, mode === "engineering-write");
     const details = pickDetails(rawDetails, ENGINEERING_DETAIL_KEYS);
     return new McpToolError(
       code,

@@ -735,10 +735,12 @@ describe("engineering tools — writes", () => {
     expect(texts[1]).not.toContain("Nothing was changed");
   });
 
-  it("never builds a review link from anything but a Website path or the action id", async () => {
-    const texts = await propose({ ...CASES.propose_engineering_action.reply, reviewUrl: "https://evil.example/phish" });
-    expect(texts[1]).toContain(`${API_URL}/engineering/actions/ea_1.`);
-    expect(texts[1]).not.toContain("evil.example");
+  it("never builds a review link from anything but the review page path or the action id", async () => {
+    for (const reviewUrl of ["https://evil.example/phish", "/settings/developer", "/engineering/actions/ea_1/../x", "//evil.example/engineering/actions/ea_1"]) {
+      const texts = await propose({ ...CASES.propose_engineering_action.reply, reviewUrl });
+      expect(texts[1], reviewUrl).toContain(`: ${API_URL}/engineering/actions/ea_1.`);
+      expect(texts[1], reviewUrl).not.toMatch(/evil|settings|\.\./);
+    }
   });
 
   it.each([
@@ -746,6 +748,11 @@ describe("engineering tools — writes", () => {
     ["pull_request.update", { number: 14, title: "New title" }],
     ["pull_request.request_review", { number: 14, reviewers: ["octocat"], teamReviewers: ["core"] }],
     ["pull_request.merge", { number: 14, strategy: "rebase_merge" }],
+    // The Azure DevOps shapes (MT-I12 correction after review).
+    ["pull_request.create", { sourceBranch: "feature/12-x", targetBranch: "main", title: "Checkout", description: "Body", isDraft: true }],
+    ["pull_request.update", { pullRequestId: 14, description: "New body", targetBranch: "develop" }],
+    ["pull_request.request_review", { pullRequestId: 14, reviewers: ["5c7a3e2f-1b4d-4c8e-9f0a-2b3c4d5e6f70"] }],
+    ["pull_request.merge", { pullRequestId: 14, strategy: "squash" }],
     ["pipeline.run", { bindingKey: "deploy", ref: "main", sha: SHA, environmentKey: "production" }],
     ["board.complete", { workspaceId: "ws_9", items: [{ itemId: "it_7", assessmentId: "as_1" }, { itemId: "it_8", assessmentId: "as_2" }] }],
   ])("propose_engineering_action passes a %s input through unchanged", async (kind, input) => {
@@ -850,6 +857,15 @@ describe("engineering tools — local validation", () => {
     ["propose_engineering_action", { productId: "p_1", kind: "board.complete", input: { workspaceId: "ws_9", items: [] }, idempotencyKey: "complete-x2" }, undefined],
     ["propose_engineering_action", { productId: "p_1", kind: "pull_request.close", input: { number: 14 }, idempotencyKey: "close-14-x" }, undefined],
     ["propose_engineering_action", { productId: "p_1", kind: "pull_request.merge", input: { number: 14, strategy: "squash" }, idempotencyKey: "short" }, undefined],
+    // GitHub and Azure DevOps names never mix in one input.
+    ["propose_engineering_action", { productId: "p_1", kind: "pull_request.merge", input: { number: 14, pullRequestId: 14, strategy: "squash" }, idempotencyKey: "merge-14-x" }, undefined],
+    ["propose_engineering_action", { productId: "p_1", kind: "pull_request.create", input: { sourceBranch: "a", targetBranch: "main", title: "T", draft: true, isDraft: true }, idempotencyKey: "create-x1" }, undefined],
+    // Azure DevOps create needs targetBranch; an Azure description is at most 4,000 characters.
+    ["propose_engineering_action", { productId: "p_1", kind: "pull_request.create", input: { sourceBranch: "a", title: "T", isDraft: true }, idempotencyKey: "create-x2" }, undefined],
+    ["propose_engineering_action", { productId: "p_1", kind: "pull_request.update", input: { pullRequestId: 14, description: "x".repeat(4001) }, idempotencyKey: "update-x1" }, undefined],
+    ["propose_engineering_action", { productId: "p_1", kind: "pull_request.request_review", input: { pullRequestId: 14, reviewers: ["g"], teamReviewers: ["core"] }, idempotencyKey: "review-x1" }, undefined],
+    // Another kind's Azure DevOps shape is still another kind's.
+    ["propose_engineering_action", { productId: "p_1", kind: "pull_request.update", input: { pullRequestId: 14, strategy: "squash" }, idempotencyKey: "update-x2" }, "VALIDATION_ERROR"],
     ["link_engineering_evidence", { workspaceId: "ws_9", itemId: "it_7", productId: "p_1", kind: "tag", externalId: "v1", expectedVersion: 0, idempotencyKey: "link-tag-v1" }, undefined],
     ["link_engineering_evidence", { workspaceId: "ws_9", itemId: "it_7", productId: "p_1", kind: "commit", externalId: SHA, expectedVersion: -1, idempotencyKey: "link-commit-1" }, undefined],
     ["unlink_engineering_evidence", { workspaceId: "ws_9", itemId: "it_7", linkId: "..", expectedVersion: 1 }, "VALIDATION_ERROR"],
@@ -1005,6 +1021,73 @@ describe("engineering tools — refusals", () => {
       expect(f.details, `${name} ${code}`).toEqual(details);
       expect(f.remediation, `${name} ${code}`).toContain(remediation);
     }
+  });
+
+  it("a code-less 404, 405 or 501 (an older Website or API) is ENGINEERING_UNSUPPORTED, for reads and writes", async () => {
+    for (const status of [404, 405, 501]) {
+      for (const name of ["read_engineering_action", "propose_engineering_action"]) {
+        const f = await refusal({ status, raw: `${status} not supported`, contentType: "text/plain" }, name, MINIMAL[name]);
+        expect(f.code, `${name} ${status}`).toBe("ENGINEERING_UNSUPPORTED");
+      }
+    }
+    const write = await refusal({ status: 405, raw: "Method Not Allowed", contentType: "text/plain" }, "unlink_engineering_evidence", MINIMAL.unlink_engineering_evidence);
+    expect(write.remediation).toContain("nothing was changed");
+  });
+
+  it("a write answered by a 5xx without an engineering code may have applied; an enveloped PROVIDER_UNAVAILABLE stays", async () => {
+    for (const reply of [
+      { status: 504, raw: "Gateway Timeout", contentType: "text/plain" },
+      { status: 502, raw: "<html>Bad gateway</html>" },
+      apiError(503, "SERVICE_UNAVAILABLE", "Down."),
+    ] as Reply[]) {
+      const f = await refusal(reply, "propose_engineering_action", MINIMAL.propose_engineering_action);
+      expect(f.code, String(reply.status)).toBe("INTERNAL_ERROR");
+      expect(f.remediation).toBe(WRITE_INTERNAL_ERROR);
+    }
+    const enveloped = await refusal(apiError(502, "BAD_GATEWAY", "Down.", { code: "PROVIDER_UNAVAILABLE" }), "link_engineering_evidence", MINIMAL.link_engineering_evidence);
+    expect(enveloped.code).toBe("PROVIDER_UNAVAILABLE");
+    expect(enveloped.remediation).toContain("nothing was changed");
+    // Reads keep PROVIDER_UNAVAILABLE for a code-less 502.
+    const read = await refusal({ status: 502, raw: "Bad gateway", contentType: "text/plain" }, "read_engineering_action", MINIMAL.read_engineering_action);
+    expect(read.code).toBe("PROVIDER_UNAVAILABLE");
+  });
+
+  it("write refusals never tell the agent to retry a read or report evidence as unverified", async () => {
+    const cases: Array<[Reply, string, string]> = [
+      [apiError(429, "RATE_LIMITED", "Slow down.", { code: "RATE_LIMITED", retryAfter: 7 }), "RATE_LIMITED", "Wait 7 s"],
+      [apiError(429, "RATE_LIMITED", "Slow down.", { code: "PROVIDER_RATE_LIMITED", retryAfter: 12 }), "PROVIDER_RATE_LIMITED", "Wait 12 s"],
+      [apiError(403, "FORBIDDEN", "No delegation.", { code: "ENGINEERING_DELEGATION_REQUIRED" }), "ENGINEERING_DELEGATION_REQUIRED", "engineering write access"],
+      [apiError(403, "FORBIDDEN", "Consent.", { code: "ENGINEERING_CONSENT_REQUIRED", provider: "github" }), "ENGINEERING_CONSENT_REQUIRED", "their GitHub connection"],
+      [apiError(403, "FORBIDDEN", "Grant.", { code: "PROVIDER_CONSENT_REQUIRED", provider: "azure_devops" }), "PROVIDER_CONSENT_REQUIRED", "Azure DevOps grant"],
+      [apiError(409, "CONFLICT", "Reconnect.", { code: "CONNECTION_REQUIRED", provider: "github" }), "CONNECTION_REQUIRED", "reconnect"],
+      [apiError(403, "FORBIDDEN", "Denied.", { code: "REPOSITORY_ACCESS_DENIED" }), "REPOSITORY_ACCESS_DENIED", "Nothing was changed"],
+      [apiError(409, "CONFLICT", "Unsupported.", { code: "PROVIDER_FEATURE_UNSUPPORTED", feature: "merge-strategy" }), "PROVIDER_FEATURE_UNSUPPORTED", "Nothing was changed"],
+      [apiError(404, "NOT_FOUND", "Off.", { code: "ENGINEERING_UNAVAILABLE", feature: "actions" }), "ENGINEERING_UNAVAILABLE", "nothing was changed"],
+    ];
+    for (const [reply, code, text] of cases) {
+      const f = await refusal(reply, "propose_engineering_action", MINIMAL.propose_engineering_action);
+      expect(f.code).toBe(code);
+      expect(f.remediation, code).toContain(text);
+      expect(f.remediation, code).not.toMatch(/this read|unverified|nothing was verified/i);
+    }
+  });
+
+  it("a write whose response body fails after the headers may have applied", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/agent-policy")) return new Response("{}", { status: 200 });
+      const body = new ReadableStream({
+        start(controller) {
+          controller.error(new Error("connection reset"));
+        },
+      });
+      return new Response(body, { status: 201, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const { mcp, close } = await connect(fetcher, DISCOVERY);
+    const out = await call(mcp, "save_board_item_assessment", MINIMAL.save_board_item_assessment);
+    expect(out.data.code).toBe("INTERNAL_ERROR");
+    expect(out.data.remediation).toBe(WRITE_INTERNAL_ERROR);
+    await close();
   });
 
   it("a write that fails in flight, or meets an unexpected API error, may have applied (MT-I13)", async () => {

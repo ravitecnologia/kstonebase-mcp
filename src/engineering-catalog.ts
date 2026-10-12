@@ -170,80 +170,112 @@ const expectedPolicyRevision = () =>
 
 // ──── Reviewed action inputs (API contract AE-I78, AE-I86, AE-I95; MT-I12) ──
 //
-// One strict shape per kind: unknown keys are refused, and no shape carries
-// an approval, a digest, a confirmation flag or an identity (ME5).
+// Strict shapes per kind: unknown keys are refused, and no shape carries an
+// approval, a digest, a confirmation flag or an identity (ME5). Each pull
+// request kind has a GitHub shape and an Azure DevOps shape (MT-I12
+// correction after review: Azure DevOps names the pull request
+// `pullRequestId`, the draft flag `isDraft`, and needs `targetBranch` on
+// create). The provider is the Product's; the API decides which applies.
 
-const prNumber = () => z.number().int().min(1).max(2147483647).describe("Pull request number.");
+const prNumber = () => z.number().int().min(1).max(2147483647).describe("GitHub pull request number.");
+const prId = () =>
+  z.number().int().min(1).max(2147483647).describe("Azure DevOps pull request id (its number on Azure DevOps).");
 const prTitle = () =>
   z.string().min(1).max(256).describe("Pull request title: one line, shown to the confirming person as data.");
-const prDescription = () =>
-  z
-    .string()
-    .max(20000)
-    .describe("Pull request description (GitHub: up to 20,000 bytes; Azure DevOps: up to 4,000 characters), shown to the confirming person as data.");
+const githubDescription = () =>
+  z.string().max(20000).describe("Pull request description (up to 20,000 bytes), shown to the confirming person as data.");
+const azureDescription = () =>
+  z.string().max(4000).describe("Pull request description (up to 4,000 characters), shown to the confirming person as data.");
 const reviewer = () => z.string().min(1).max(100);
+const strategy = () =>
+  z
+    .enum(["merge_commit", "squash", "rebase", "rebase_merge"])
+    .describe("Merge strategy allowed by the delivery settings (rebase_merge is Azure DevOps only).");
 
 export const ENGINEERING_ACTION_INPUTS = {
-  "pull_request.create": z.strictObject({
-    sourceBranch: branch("Source branch, for example a development run's published branch."),
-    targetBranch: branch(
-      "Target branch: the base, integration or release branch of the delivery settings; the default branch of the settings when omitted.",
-    ).optional(),
-    title: prTitle(),
-    description: prDescription().optional(),
-    draft: z.boolean().optional().describe("Open the pull request as a draft."),
-  }),
-  "pull_request.update": z.strictObject({
-    number: prNumber(),
-    title: prTitle().optional(),
-    description: prDescription().optional(),
-    targetBranch: branch("New target branch: the base, integration or release branch of the delivery settings.").optional(),
-  }),
-  "pull_request.request_review": z.strictObject({
-    number: prNumber(),
-    reviewers: z
-      .array(reviewer())
-      .min(1)
-      .max(10)
-      .describe("1–10 reviewers: GitHub logins, or Azure DevOps identity GUIDs."),
-    teamReviewers: z.array(reviewer()).max(10).optional().describe("Up to 10 GitHub team slugs."),
-  }),
-  "pull_request.merge": z.strictObject({
-    number: prNumber(),
-    strategy: z
-      .enum(["merge_commit", "squash", "rebase", "rebase_merge"])
-      .describe("Merge strategy allowed by the delivery settings (rebase_merge is Azure DevOps only)."),
-  }),
-  "pipeline.run": z.strictObject({
-    bindingKey: bindingKey("CI binding key from read_delivery_configuration; the binding must allow dispatch."),
-    ref: branch("Branch or tag name to run (not a SHA)."),
-    sha: sha("Commit the ref must still point to").optional(),
-    environmentKey: environmentKey(
-      "Environment the run deploys to; required when the binding deploys to production.",
-    ).optional(),
-  }),
-  "board.complete": z.strictObject({
-    workspaceId: z
-      .string()
-      .min(1)
-      .max(64)
-      .describe("The Workspace of the cards: the Product's current Software Engineering Workspace."),
-    items: z
-      .array(
-        z.strictObject({
-          itemId: itemId(),
-          assessmentId: z
-            .string()
-            .min(1)
-            .max(100)
-            .describe("The card's saved, fresh, eligible assessment (see save_board_item_assessment)."),
-        }),
-      )
-      .min(1)
-      .max(10)
-      .describe("1–10 PBIs in Doing, each with its own saved assessment."),
-  }),
-} as const satisfies Record<EngineeringActionKind, z.ZodType>;
+  "pull_request.create": [
+    z.strictObject({
+      sourceBranch: branch("Source branch, for example a development run's published branch."),
+      targetBranch: branch(
+        "Target branch: the base, integration or release branch of the delivery settings; on GitHub the default branch of the settings when omitted.",
+      ).optional(),
+      title: prTitle(),
+      description: githubDescription().optional(),
+      draft: z.boolean().optional().describe("GitHub: open the pull request as a draft."),
+    }),
+    z.strictObject({
+      sourceBranch: branch("Source branch, for example a development run's published branch."),
+      targetBranch: branch(
+        "Target branch, required on Azure DevOps: the base, integration or release branch of the delivery settings.",
+      ),
+      title: prTitle(),
+      description: azureDescription().optional(),
+      isDraft: z.boolean().optional().describe("Azure DevOps: open the pull request as a draft."),
+    }),
+  ],
+  "pull_request.update": [
+    z.strictObject({
+      number: prNumber(),
+      title: prTitle().optional(),
+      description: githubDescription().optional(),
+      targetBranch: branch("New target branch: the base, integration or release branch of the delivery settings.").optional(),
+    }),
+    z.strictObject({
+      pullRequestId: prId(),
+      title: prTitle().optional(),
+      description: azureDescription().optional(),
+      targetBranch: branch("New target branch: the base, integration or release branch of the delivery settings.").optional(),
+    }),
+  ],
+  "pull_request.request_review": [
+    z.strictObject({
+      number: prNumber(),
+      reviewers: z.array(reviewer()).min(1).max(10).describe("1–10 reviewers: GitHub logins."),
+      teamReviewers: z.array(reviewer()).max(10).optional().describe("Up to 10 GitHub team slugs."),
+    }),
+    z.strictObject({
+      pullRequestId: prId(),
+      reviewers: z.array(reviewer()).min(1).max(10).describe("1–10 reviewers: Azure DevOps identity GUIDs."),
+    }),
+  ],
+  "pull_request.merge": [
+    z.strictObject({ number: prNumber(), strategy: strategy() }),
+    z.strictObject({ pullRequestId: prId(), strategy: strategy() }),
+  ],
+  "pipeline.run": [
+    z.strictObject({
+      bindingKey: bindingKey("CI binding key from read_delivery_configuration; the binding must allow dispatch."),
+      ref: branch("Branch or tag name to run (not a SHA)."),
+      sha: sha("Commit the ref must still point to").optional(),
+      environmentKey: environmentKey(
+        "Environment the run deploys to; required when the binding deploys to production.",
+      ).optional(),
+    }),
+  ],
+  "board.complete": [
+    z.strictObject({
+      workspaceId: z
+        .string()
+        .min(1)
+        .max(64)
+        .describe("The Workspace of the cards: the Product's current Software Engineering Workspace."),
+      items: z
+        .array(
+          z.strictObject({
+            itemId: itemId(),
+            assessmentId: z
+              .string()
+              .min(1)
+              .max(100)
+              .describe("The card's saved, fresh, eligible assessment (see save_board_item_assessment)."),
+          }),
+        )
+        .min(1)
+        .max(10)
+        .describe("1–10 PBIs in Doing, each with its own saved assessment."),
+    }),
+  ],
+} as const satisfies Record<EngineeringActionKind, readonly z.ZodType[]>;
 
 // ──── Tool catalog (ME4, D1 scope) ─────────────────────────────────────────
 
@@ -552,7 +584,7 @@ export const ENGINEERING_TOOLS = {
   propose_engineering_action: {
     title: "Propose an engineering action",
     description: describe(
-      `Propose a reviewed engineering action on a Product: create or update a pull request, request reviewers, merge a pull request, run a delivery pipeline, or move Board PBIs to Done (board.complete: each card in Doing with a saved, fresh, eligible assessment from save_board_item_assessment). input must have the shape of kind. Kstonebase checks it against the live state and the delivery settings and stores the exact review. ${CONFIRMED_BY_A_PERSON} Give the person the review link from the result and say nothing changes until they confirm it before it expires; never claim the change happened until read_engineering_action shows it succeeded, and never propose the same change again on your own. ${WRITE_ACCESS}`,
+      `Propose a reviewed engineering action on a Product: create or update a pull request, request reviewers, merge a pull request, run a delivery pipeline, or move Board PBIs to Done (board.complete: each card in Doing with a saved, fresh, eligible assessment from save_board_item_assessment). input must have the shape of kind; on Azure DevOps a pull request is pullRequestId (not number), a draft is isDraft, and creating one needs targetBranch. Kstonebase checks it against the live state and the delivery settings and stores the exact review. ${CONFIRMED_BY_A_PERSON} Give the person the review link from the result and say nothing changes until they confirm it before it expires; never claim the change happened until read_engineering_action shows it succeeded, and never propose the same change again on your own. ${WRITE_ACCESS}`,
     ),
     annotations: ENGINEERING_ADDITIVE,
     inputSchema: {
@@ -561,15 +593,15 @@ export const ENGINEERING_TOOLS = {
       itemId: itemId().optional(),
       input: z
         .union([
-          ENGINEERING_ACTION_INPUTS["pull_request.create"],
-          ENGINEERING_ACTION_INPUTS["pull_request.update"],
-          ENGINEERING_ACTION_INPUTS["pull_request.request_review"],
-          ENGINEERING_ACTION_INPUTS["pull_request.merge"],
-          ENGINEERING_ACTION_INPUTS["pipeline.run"],
-          ENGINEERING_ACTION_INPUTS["board.complete"],
+          ...ENGINEERING_ACTION_INPUTS["pull_request.create"],
+          ...ENGINEERING_ACTION_INPUTS["pull_request.update"],
+          ...ENGINEERING_ACTION_INPUTS["pull_request.request_review"],
+          ...ENGINEERING_ACTION_INPUTS["pull_request.merge"],
+          ...ENGINEERING_ACTION_INPUTS["pipeline.run"],
+          ...ENGINEERING_ACTION_INPUTS["board.complete"],
         ])
         .describe(
-          "The change, in the shape of kind: pull_request.create {sourceBranch, targetBranch?, title, description?, draft?}; pull_request.update {number, title?, description?, targetBranch?}; pull_request.request_review {number, reviewers, teamReviewers?}; pull_request.merge {number, strategy}; pipeline.run {bindingKey, ref, sha?, environmentKey?}; board.complete {workspaceId, items: [{itemId, assessmentId}]}.",
+          "The change, in the shape of kind and of the Product's provider (GitHub or Azure DevOps, see list_engineering_repositories): pull_request.create {sourceBranch, targetBranch?, title, description?, draft?} on GitHub, {sourceBranch, targetBranch, title, description?, isDraft?} on Azure DevOps (targetBranch required); pull_request.update {number, title?, description?, targetBranch?} on GitHub, {pullRequestId, title?, description?, targetBranch?} on Azure DevOps; pull_request.request_review {number, reviewers, teamReviewers?} on GitHub, {pullRequestId, reviewers} on Azure DevOps (identity GUIDs); pull_request.merge {number, strategy} on GitHub, {pullRequestId, strategy} on Azure DevOps; pipeline.run {bindingKey, ref, sha?, environmentKey?}; board.complete {workspaceId, items: [{itemId, assessmentId}]}.",
         ),
       idempotencyKey: idempotencyKey(),
       expectedPolicyRevision: expectedPolicyRevision(),
@@ -728,14 +760,15 @@ function writeRequest(request: Omit<EngineeringRequest, "write" | "policyRevisio
   return out;
 }
 
-/** propose_engineering_action: `input` must have the shape of `kind` (MT-I12). */
+/** propose_engineering_action: `input` must have a shape of `kind` (MT-I12). */
 function actionInput(args: Args): unknown {
   const kind = str(args, "kind");
-  const shape =
+  const shapes: readonly z.ZodType[] =
     kind !== undefined && Object.hasOwn(ENGINEERING_ACTION_INPUTS, kind)
       ? ENGINEERING_ACTION_INPUTS[kind as EngineeringActionKind]
-      : undefined;
-  if (!shape || !shape.safeParse(args.input).success) {
+      : [];
+  // Either provider's shape of the kind; never another kind's.
+  if (!shapes.some((shape) => shape.safeParse(args.input).success)) {
     throw new EngineeringArgumentError(
       "input",
       "invalid-value",
@@ -1080,6 +1113,50 @@ export const ENGINEERING_WRITE_INTERNAL_ERROR =
   "The change may or may not have been applied. Read the current state (list_engineering_links, read_engineering_action) before retrying with the same idempotencyKey.";
 
 /**
+ * The write tools' wording of codes whose read remediation speaks of reads
+ * and unverified evidence (MT-I13): a refused write changed nothing.
+ */
+function writeRemediation(code: string, details?: Readonly<Record<string, unknown>>): string | undefined {
+  const NOT_CHANGED = "Nothing was changed.";
+  switch (code) {
+    case "INTERNAL_ERROR":
+      return ENGINEERING_WRITE_INTERNAL_ERROR;
+    case "ENGINEERING_UNSUPPORTED":
+      return "This Kstonebase server does not provide this engineering capability, so nothing was changed. Report it; never try another way to make the change.";
+    case "ENGINEERING_UNAVAILABLE":
+      return "This engineering capability (details.feature) is turned off on this Kstonebase server, so nothing was changed. Report it; never try another way to make the change.";
+    case "ENGINEERING_DELEGATION_REQUIRED":
+      return `This needs engineering write access: grant it to this agent in Kstonebase › Settings › AI Agent access (Desktop), or create a token/authorize a connector with engineering write access. ${NOT_CHANGED} Report it instead of retrying.`;
+    case "ENGINEERING_CONSENT_REQUIRED":
+      return `The person must enable engineering access for their ${providerName(details)} connection in Kstonebase › Settings › Connections. ${NOT_CHANGED}`;
+    case "CONNECTION_REQUIRED":
+      return `The person must connect, or reconnect (details.problem), their ${providerName(details)} account in Kstonebase › Settings › Connections. ${NOT_CHANGED}`;
+    case "PROVIDER_CONSENT_REQUIRED":
+      return `The person's ${providerName(details)} grant lacks a permission this change needs (details.remediation: reconsent, replace-token or ask-installation-owner). ${NOT_CHANGED}`;
+    case "PROVIDER_PERMISSION_INSUFFICIENT":
+      return `The person's ${providerName(details)} account may not do this (details.operation). ${NOT_CHANGED} Report it.`;
+    case "REPOSITORY_ACCESS_DENIED":
+      return `The person's provider account cannot see this repository. ${NOT_CHANGED} Report it.`;
+    case "PROVIDER_FEATURE_UNSUPPORTED":
+      return `The provider cannot do this here (details.feature). ${NOT_CHANGED} Report it; never try another way to make the change.`;
+    case "PROVIDER_RATE_LIMITED":
+      return `The provider is throttling the person's requests, so nothing was changed. Wait ${retryAfter(details)} s, then retry this exact request once, with the same idempotencyKey or version.`;
+    case "RATE_LIMITED":
+      return `Kstonebase limits how many engineering requests one person makes per minute, so nothing was changed. Wait ${retryAfter(details)} s, then retry this exact request once, with the same idempotencyKey or version.`;
+    case "PROVIDER_UNAVAILABLE":
+      return `The provider could not be reached, so nothing was changed. Retry later with the same idempotencyKey or version, or report it.`;
+    case "REPOSITORY_NOT_CONFIGURED":
+      return `No repository is linked to this Product, so this cannot be done. ${NOT_CHANGED} Report it; only the Product owner links a repository, in Kstonebase.`;
+    case "DELIVERY_NOT_CONFIGURED":
+      return `The Product's delivery settings do not define this (details.field). ${NOT_CHANGED} Never infer a pipeline, an environment, a branch model or a merge strategy: report it. Only the Product owner configures delivery, in Kstonebase.`;
+    case "REPOSITORY_CHANGED":
+      return `The Product's repository link changed meanwhile. ${NOT_CHANGED} Check the Product again with get_engineering_capabilities and read the evidence again before retrying.`;
+    default:
+      return undefined;
+  }
+}
+
+/**
  * Remediation of an engineering refusal (ME6, MT-I13), filled from its
  * details. `write` selects the write tools' INTERNAL_ERROR text; reads keep
  * theirs.
@@ -1089,6 +1166,10 @@ export function engineeringRemediation(
   details?: Readonly<Record<string, unknown>>,
   write = false,
 ): string | undefined {
+  if (write) {
+    const text = writeRemediation(code, details);
+    if (text !== undefined) return text;
+  }
   switch (code) {
     case "ENGINEERING_UNSUPPORTED":
       return "This Kstonebase server does not provide this engineering capability, so nothing was verified. Report the evidence as unverified; never try another way to reach the repository or provider.";
@@ -1223,7 +1304,7 @@ export function proposalText(action: unknown, origin: string): string {
       : {};
   const base = origin.replace(/\/+$/, "");
   let link: string | null = null;
-  if (typeof a.reviewUrl === "string" && /^\/[A-Za-z0-9_-][A-Za-z0-9/_-]{0,199}$/.test(a.reviewUrl)) link = `${base}${a.reviewUrl}`;
+  if (typeof a.reviewUrl === "string" && /^\/engineering\/actions\/[A-Za-z0-9_-]{1,100}$/.test(a.reviewUrl)) link = `${base}${a.reviewUrl}`;
   else if (typeof a.id === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(a.id)) link = `${base}/engineering/actions/${a.id}`;
   const where = link ? `: ${link}.` : ".";
   if (typeof a.state === "string" && a.state !== "proposed") {

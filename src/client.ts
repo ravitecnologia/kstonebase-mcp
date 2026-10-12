@@ -836,7 +836,7 @@ export class KstonebaseClient {
       mode,
     );
 
-    const text = await res.text();
+    const text = await this.readBody(res, mode);
     const parsed =
       text.length > 0
         ? (safeParseJson(text) as ApiErrorBody | unknown)
@@ -1118,7 +1118,7 @@ export class KstonebaseClient {
       };
     }
 
-    const text = await res.text();
+    const text = await this.readBody(res, mode);
     const body =
       text.length > 0
         ? (safeParseJson(text) as ApiErrorBody | unknown)
@@ -1133,6 +1133,24 @@ export class KstonebaseClient {
       etag: res.headers.get("etag"),
       status: res.status,
     };
+  }
+
+  /**
+   * The response body. For an engineering request, a body that fails to
+   * arrive after the headers is INTERNAL_ERROR with the engineering
+   * remediation (a write's says it may or may not have been applied).
+   */
+  private async readBody(res: Response, mode: ErrorMappingMode): Promise<string> {
+    if (mode !== "engineering" && mode !== "engineering-write") return res.text();
+    try {
+      return await res.text();
+    } catch (err) {
+      throw new McpToolError(
+        "INTERNAL_ERROR",
+        `The response did not complete: ${(err as Error)?.message ?? String(err)}`,
+        boardRemediation("INTERNAL_ERROR", mode),
+      );
+    }
   }
 
   /**
