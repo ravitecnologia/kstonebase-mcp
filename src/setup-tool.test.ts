@@ -519,6 +519,26 @@ describe("agent-docs template", () => {
     expect(body).toContain("`productId = P_FREE` inside `workspaceId = W1`");
   });
 
+  it("prints no management-type line for any binding shape (PBI 271)", () => {
+    const shapes: AgentDocsBinding[] = [
+      { productId: "P", productName: "f", productType: "free", workspaceId: null, workspaceName: null },
+      { productId: "P", productName: "w", productType: "web_application", workspaceId: "W", workspaceName: "ws" },
+      { productId: "P", productName: "u", productType: null, workspaceId: null, workspaceName: null },
+      { productId: null, productName: null, productType: null, workspaceId: "W", workspaceName: "ws" },
+    ];
+    for (const binding of shapes) {
+      const body = renderAgentDocs(binding);
+      expect(body).not.toMatch(/^- Type:/m);
+      expect(body).not.toMatch(/Web Application|\bFree\b/);
+      expect(body).toContain("## Bound entity");
+      expect(body).toMatch(/^- Name: /m);
+      expect(body).toMatch(/^- Id: `/m);
+    }
+    // The inventory still depends on the bound Product.
+    expect(buildToolInventory(shapes[0]!).writes).toContain("create_free_specification");
+    expect(buildToolInventory(shapes[1]!).writes).not.toContain("create_free_specification");
+  });
+
   it("renders a workspace-only Bindings line", () => {
     const body = renderAgentDocs({
       productId: null,

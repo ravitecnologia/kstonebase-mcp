@@ -270,6 +270,16 @@ describe("mapApiError — details.code precedence over the envelope", () => {
   });
 });
 
+describe("mapApiError — PRODUCT_TYPE_UNSUPPORTED (PBI 271)", () => {
+  it("tells the agent to omit the management type, since new Products always use the flexible document model", () => {
+    const err = mapApiError(400, envelope("PRODUCT_TYPE_UNSUPPORTED", "New Products always use the flexible document model."));
+    expect(err.code).toBe("PRODUCT_TYPE_UNSUPPORTED");
+    expect(err.remediation).toBe(
+      "New Products always use the flexible document model. Omit specificationManagementType.",
+    );
+  });
+});
+
 describe("mapApiError — credential and scope vocabulary is unchanged (spec §6)", () => {
   // What main (2.1.0) returned for the API's credential/scope envelopes.
   // The open-question work must not change these codes at the boundary.

@@ -236,7 +236,7 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
   PRODUCT_TYPE_MISMATCH:
     "The filter you passed isn't compatible with this product's type. Drop the filter or call against a matching product.",
   PRODUCT_TYPE_UNSUPPORTED:
-    'This tool only supports specificationManagementType="free" in v1. Omit the field or pass "free" explicitly.',
+    "New Products always use the flexible document model. Omit specificationManagementType.",
   NOT_IN_WORKSPACE:
     "This tool requires a Workspace binding. Set `workspaceId` in .kstonebase.json or pass it explicitly.",
   LEGACY_BINDING_DETECTED:

@@ -986,7 +986,6 @@ export class KstonebaseClient {
       name: string;
       description?: string;
       tags?: string[];
-      specificationManagementType?: "free" | "web_application";
     },
     options: WriteOptions = {},
   ): Promise<ApiResponse<unknown>> {
