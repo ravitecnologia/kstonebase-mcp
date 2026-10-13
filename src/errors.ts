@@ -236,7 +236,7 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
   PRODUCT_TYPE_MISMATCH:
     "The filter you passed isn't compatible with this product's type. Drop the filter or call against a matching product.",
   PRODUCT_TYPE_UNSUPPORTED:
-    'This tool only supports specificationManagementType="free" in v1. Omit the field or pass "free" explicitly.',
+    "New Products always use the flexible document model. Omit specificationManagementType.",
   NOT_IN_WORKSPACE:
     "This tool requires a Workspace binding. Set `workspaceId` in .kstonebase.json or pass it explicitly.",
   LEGACY_BINDING_DETECTED:
@@ -421,6 +421,10 @@ const DETAIL_FIRST_CODES: Readonly<Record<string, McpStructuredCode>> = {
   SPEC_ARCHIVED: "SPEC_ARCHIVED",
   OPEN_QUESTIONS_PRESENT: "OPEN_QUESTIONS_PRESENT",
   PRODUCT_TYPE_MISMATCH: "PRODUCT_TYPE_MISMATCH",
+  // create_product's refusal of an explicit legacy management type (PBI 271)
+  // arrives under BAD_REQUEST; nothing was created, so it must not read as
+  // an INTERNAL_ERROR that "may already have been applied".
+  PRODUCT_TYPE_UNSUPPORTED: "PRODUCT_TYPE_UNSUPPORTED",
   STALE_VERSION: "STALE_VERSION",
   STALE_QUESTION: "STALE_QUESTION",
   MARKER_NOT_FOUND: "MARKER_NOT_FOUND",

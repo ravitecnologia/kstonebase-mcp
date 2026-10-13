@@ -97,11 +97,12 @@ function renderIntroLine(binding: AgentDocsBinding): string {
 function renderBoundEntity(binding: AgentDocsBinding): string {
   const lines: string[] = [];
   const name = binding.productName ?? binding.workspaceName ?? "(unknown)";
-  const typeLabel = renderTypeLabel(binding);
   const id = binding.productId ?? binding.workspaceId ?? "(unknown)";
 
+  // No "- Type:" line: the Product's management type is internal and never
+  // shown (Kstonebase MCP spec "specification-authoring/protocol", PBI 271).
+  // The tool inventory below still branches on it.
   lines.push(`- Name: ${name}`);
-  lines.push(`- Type: ${typeLabel}`);
   lines.push(`- Id: \`${id}\``);
   if (binding.productId && binding.workspaceId) {
     lines.push(
@@ -122,15 +123,6 @@ function renderBoundIdsLine(binding: AgentDocsBinding): string {
     return `\`workspaceId = ${binding.workspaceId}\``;
   }
   return "no ids (unbound)";
-}
-
-function renderTypeLabel(binding: AgentDocsBinding): string {
-  if (binding.productId) {
-    if (binding.productType === "free") return "Free";
-    if (binding.productType === "web_application") return "Web Application";
-    return "Product";
-  }
-  return "Workspace";
 }
 
 interface ToolInventory {
@@ -178,8 +170,8 @@ export function buildToolInventory(binding: AgentDocsBinding): ToolInventory {
     "get_effective_instructions",
   ];
 
-  // Open-question tools work on Product (Free or Web Application) and
-  // Workspace specifications alike, so they belong to every binding shape.
+  // Open-question tools work on Product (flexible-model or legacy structured)
+  // and Workspace specifications alike, so they belong to every binding shape.
   const baseWrites = [
     "start_new_version",
     "update_specification_content",
@@ -192,13 +184,15 @@ export function buildToolInventory(binding: AgentDocsBinding): ToolInventory {
     "discard_draft",
   ];
 
-  // Per-binding writes:
-  //   - Free product → can create new specs via create_free_specification.
-  //   - Web Application product → no create_free_specification (rejected with
-  //     PRODUCT_TYPE_MISMATCH).
+  // Per-binding writes (productType is internal; it is never rendered):
+  //   - Flexible-model product ("free") → can create new specs via
+  //     create_free_specification.
+  //   - Legacy structured product ("web_application") → no
+  //     create_free_specification (rejected with PRODUCT_TYPE_MISMATCH).
   //   - Workspace-only binding → can create new Products via create_product.
-  //   - Workspace + Free product → both, since the credential authorises both.
-  //   - Workspace + Web Application product → create_product only.
+  //   - Workspace + flexible-model product → both, since the credential
+  //     authorises both.
+  //   - Workspace + legacy structured product → create_product only.
   //   - Orphan product (no workspaceId) → no create_product.
   const writes = [...baseWrites];
   if (binding.productId && binding.productType === "free") {

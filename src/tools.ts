@@ -606,7 +606,7 @@ export function registerReadTools(
     {
       title: "Read a product",
       description:
-        "Read a Product's metadata: name, description, specificationManagementType, and member-of Workspace (when set). Read-only.",
+        "Read a Product's metadata: name, description and member-of Workspace (when set). Read-only.",
       annotations: READ_TOOL,
       inputSchema: {
         productId: z.string().optional(),
@@ -650,7 +650,7 @@ export function registerReadTools(
     {
       title: "List specifications",
       description:
-        "List specifications in scope. Read-only. Default scope follows the binding: when both workspaceId and productId are bound, lists the Product's specs; with only workspaceId, lists the Workspace's own specs; with only productId, lists the Product's specs. Pass `scope` and/or `productId`/`workspaceId` to override. Filters are type-aware: Free scopes accept folder/tag; Web Application Products accept the BUSINESS/UX/DESIGN_SYSTEM type filter.",
+        "List specifications in scope. Read-only. Default scope follows the binding: when both workspaceId and productId are bound, lists the Product's specs; with only workspaceId, lists the Workspace's own specs; with only productId, lists the Product's specs. Pass `scope` and/or `productId`/`workspaceId` to override. Filters depend on the scope: Workspaces and Products that use the flexible document model accept folder/tag; structured legacy Products accept the BUSINESS/UX/DESIGN_SYSTEM type filter.",
       annotations: READ_TOOL,
       inputSchema: {
         scope: z.enum(["workspace", "product"]).optional(),
@@ -1404,16 +1404,24 @@ export function registerWriteTools(
     {
       title: "Create a Product in the bound Workspace",
       description:
-        'Create a new Product inside the bound Workspace. Side effect: a new Product row is created with specificationManagementType="free" by default. Requires a Workspace-scope binding; product-allowlist credentials cannot create Products.',
+        "Create a new Product inside the bound Workspace. New Products use the flexible document model. Requires a Workspace-scope binding; product-allowlist credentials cannot create Products.",
       annotations: ADDITIVE_WRITE_TOOL,
+      // No management-type choice (PBI 271): every new Product uses the
+      // flexible document model. The deprecated, free-form field stays only
+      // so an explicit request from an older agent reaches the API and gets
+      // its actionable PRODUCT_TYPE_UNSUPPORTED refusal instead of being
+      // silently stripped.
       inputSchema: {
         workspaceId: z.string().optional(),
         name: z.string().trim().min(1).max(80),
         description: z.string().max(280).optional(),
         tags: z.array(z.string().min(1).max(40)).max(32).optional(),
         specificationManagementType: z
-          .enum(["free", "web_application"])
-          .optional(),
+          .string()
+          .optional()
+          .describe(
+            'Deprecated — omit it. New Products always use the flexible document model; any value other than "free" is refused by the server with PRODUCT_TYPE_UNSUPPORTED.',
+          ),
         expectedPolicyRevision: expectedPolicyRevision(),
       },
     },
@@ -1430,7 +1438,10 @@ export function registerWriteTools(
               name: args.name,
               description: args.description,
               tags: args.tags,
-              specificationManagementType: args.specificationManagementType,
+              // Forwarded unchanged only when present, so the API decides.
+              ...(args.specificationManagementType !== undefined
+                ? { specificationManagementType: args.specificationManagementType }
+                : {}),
             },
             writeOptions(args),
           );
@@ -1529,17 +1540,18 @@ export function registerWriteTools(
       ),
   );
 
-  // Free-spec creation only makes sense when the bound product is Free.
-  // The API enforces this with PRODUCT_TYPE_MISMATCH, but the tool stays
-  // listed unconditionally so the agent can call it after binding to a
-  // Free product — the type check at call time matches the spec's
-  // documented behaviour better than an opaque "tool not found".
+  // Free-spec creation only makes sense when the bound product uses the
+  // flexible document model. The API enforces this with
+  // PRODUCT_TYPE_MISMATCH, but the tool stays listed unconditionally so the
+  // agent can call it after binding to such a product — the check at call
+  // time matches the spec's documented behaviour better than an opaque
+  // "tool not found".
   server.registerTool(
     "create_free_specification",
     {
-      title: "Create a Free product specification",
+      title: "Create a Markdown specification",
       description:
-        "Create a new Markdown specification in the bound Free product. Side effect: a new spec row is created at status=Draft, approvedVersion=1. Path uniqueness is enforced. Rejected with PRODUCT_TYPE_MISMATCH when the product is Web Application — use start_new_version on an existing structured spec instead.",
+        "Create a new Markdown specification in the bound Product (Products that use the flexible document model). Side effect: a new spec row is created at status=Draft, approvedVersion=1. Path uniqueness is enforced. Rejected with PRODUCT_TYPE_MISMATCH on a structured legacy Product — use start_new_version on one of its existing specs instead.",
       annotations: ADDITIVE_WRITE_TOOL,
       inputSchema: {
         productId: z.string().optional(),

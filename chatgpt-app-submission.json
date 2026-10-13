@@ -267,7 +267,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Creates a new specification record in a Free product, which adds new Kstonebase data.",
+        "read_only_justification": "Creates a new specification record in a Product, which adds new Kstonebase data.",
         "open_world_justification": "Only creates records inside a private Kstonebase workspace and does not publish to public internet endpoints.",
         "destructive_justification": "Creates new content but does not delete, revoke, or overwrite existing data irreversibly."
       }
@@ -911,11 +911,11 @@
       "expected_output_url": null
     },
     {
-      "description": "Create a brand new free-form specification in a Free product.",
-      "user_prompt": "Create a new specification titled Background Jobs ADR in the bound Free product.",
+      "description": "Create a brand new Markdown specification in a Product.",
+      "user_prompt": "Create a new specification titled Background Jobs ADR in the bound Product.",
       "file_attachment_urls": null,
       "tools_triggered": "create_free_specification",
-      "expected_output": "Creates a new draft specification with the requested title in the bound Free product.",
+      "expected_output": "Creates a new draft specification with the requested title in the bound Product.",
       "expected_output_url": null
     },
     {
