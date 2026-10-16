@@ -533,11 +533,17 @@ export function createToolRunner(policy: PolicyNotices, authoring?: AuthoringNot
     };
     try {
       const result = await body(call);
-      if (authoring && authoringTarget && result.isError !== true) {
-        await authoring.decorate(result, authoringTarget);
-      }
-      if (scope && result.isError !== true) {
-        await policy.decorate(result, scope, resolved);
+      if (result.isError !== true) {
+        // Both notice reads are issued in this order (authoring context,
+        // then policy) and run in parallel, so a slow context route never
+        // delays the policy read; the policy notice is still appended last.
+        const authoringRead =
+          authoring && authoringTarget ? authoring.resolve(authoringTarget) : undefined;
+        const policyRead =
+          scope?.kind === "target" && resolved === undefined ? policy.resolve(scope.target) : undefined;
+        const [authoringOutcome, policyOutcome] = await Promise.all([authoringRead, policyRead]);
+        if (authoring && authoringOutcome) authoring.apply(result, authoringOutcome);
+        if (scope) await policy.decorate(result, scope, resolved ?? policyOutcome);
       }
       logger.debug("tool", {
         tool: name,

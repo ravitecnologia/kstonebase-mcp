@@ -250,7 +250,11 @@ const DETAIL_SOURCE_LABELS: Readonly<Record<AuthoringDetailSource, string>> = {
   product_override: "Product override",
 };
 
+// Values the notice prints verbatim: a detail level, a specification id
+// and a specification status (the Kstonebase-hosted registry's rules).
 const DETAIL_LEVEL_PATTERN = /^[a-z_]{1,32}$/;
+const SPECIFICATION_ID_PATTERN = /^[A-Za-z0-9_-]{1,100}$/;
+const STATUS_PATTERN = /^[A-Za-z][A-Za-z_-]{0,31}$/;
 
 const GOVERNED_GUIDANCE =
   "Before drafting, read the ancestor indexes below, reuse existing subjects, give each distinct subject its own folder and document, keep bodies consolidated and record decisions with append_context or changeNote. Call read_authoring_context for the rules, rubric and navigation.";
@@ -277,23 +281,34 @@ function targetLabel(target: PolicyTarget): string {
   return `${target.type}:${target.id}`;
 }
 
+/**
+ * A path printed inside the notice: legacy paths were never validated, so a
+ * control or line-separator character must never start a forged line of its
+ * own there. Each one becomes U+FFFD.
+ */
+function noticeText(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "\uFFFD");
+}
+
 /** One `Ancestor indexes:` entry, or null for an entry this package cannot read. */
 function ancestorLabel(entry: unknown): string | null {
   if (!isRecord(entry) || typeof entry.path !== "string" || entry.path.length === 0) return null;
+  const path = noticeText(entry.path);
   if (entry.missing === true) {
-    return `${entry.path} (missing; created with the first governed document in that folder)`;
+    return `${path} (missing; created with the first governed document in that folder)`;
   }
   if (
     typeof entry.specificationId !== "string" ||
-    entry.specificationId.length === 0 ||
+    !SPECIFICATION_ID_PATTERN.test(entry.specificationId) ||
     typeof entry.version !== "number" ||
     !Number.isInteger(entry.version) ||
+    entry.version < 1 ||
     typeof entry.status !== "string" ||
-    entry.status.length === 0
+    !STATUS_PATTERN.test(entry.status)
   ) {
     return null;
   }
-  return `${entry.path} (spec ${entry.specificationId}, v${entry.version}, ${entry.status})`;
+  return `${path} (spec ${entry.specificationId}, v${entry.version}, ${entry.status})`;
 }
 
 /**
@@ -408,17 +423,25 @@ export class AuthoringNotices {
   }
 
   /**
-   * Append the authoring notice and its `_meta` summary to a successful
-   * result. Called before the Workspace instructions notice is appended, so
-   * that notice stays the last item; earlier items are left unchanged.
+   * Append the notice of a resolved outcome and its `_meta` summary to a
+   * successful result. Called before the Workspace instructions notice is
+   * appended, so that notice stays the last item; earlier items are left
+   * unchanged.
    */
+  apply(
+    result: { content: Array<{ type: "text"; text: string }> } & Record<string, unknown>,
+    outcome: AuthoringOutcome,
+  ): void {
+    result.content.push({ type: "text", text: authoringNoticeText(outcome) });
+    const existing = isRecord(result._meta) ? result._meta : {};
+    result._meta = { ...existing, [AUTHORING_META_KEY]: authoringMeta(outcome) };
+  }
+
+  /** Resolve `target` fresh and apply its notice. */
   async decorate(
     result: { content: Array<{ type: "text"; text: string }> } & Record<string, unknown>,
     target: PolicyTarget,
   ): Promise<void> {
-    const outcome = await this.resolve(target);
-    result.content.push({ type: "text", text: authoringNoticeText(outcome) });
-    const existing = isRecord(result._meta) ? result._meta : {};
-    result._meta = { ...existing, [AUTHORING_META_KEY]: authoringMeta(outcome) };
+    this.apply(result, await this.resolve(target));
   }
 }

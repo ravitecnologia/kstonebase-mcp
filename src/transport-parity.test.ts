@@ -326,18 +326,27 @@ beforeAll(async () => {
     req.on("end", () => {
       const method = req.method ?? "GET";
       const path = req.url ?? "/";
-      seen.push({
-        method,
-        path,
-        authorization: req.headers.authorization,
-        cookie: req.headers.cookie,
-        contentType: req.headers["content-type"],
-        policyRevision: req.headers["x-kstonebase-policy-revision"] as string | undefined,
-        body: raw.length > 0 ? JSON.parse(raw) : undefined,
-      });
-      const reply = route(method, path);
-      res.writeHead(reply.status, { "content-type": reply.raw ? "text/plain" : "application/json" });
-      res.end(reply.raw ?? JSON.stringify(reply.json));
+      const record = () => {
+        seen.push({
+          method,
+          path,
+          authorization: req.headers.authorization,
+          cookie: req.headers.cookie,
+          contentType: req.headers["content-type"],
+          policyRevision: req.headers["x-kstonebase-policy-revision"] as string | undefined,
+          body: raw.length > 0 ? JSON.parse(raw) : undefined,
+        });
+        const reply = route(method, path);
+        res.writeHead(reply.status, { "content-type": reply.raw ? "text/plain" : "application/json" });
+        res.end(reply.raw ?? JSON.stringify(reply.json));
+      };
+      // A decorated call issues its authoring-context read, then its policy
+      // read, in parallel (PBI 276); over separate sockets they may arrive
+      // swapped. Recording a policy read a moment later keeps the recorded
+      // order equal to the issue order (the client never sends a later
+      // call's request before this answer).
+      if (path.startsWith("/api/mcp/agent-policy?")) setTimeout(record, 10);
+      else record();
     });
   });
   await new Promise<void>((resolve) => stubApi.listen(0, "127.0.0.1", resolve));
