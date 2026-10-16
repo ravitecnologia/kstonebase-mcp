@@ -77,7 +77,8 @@ const planOperation = () =>
       subject: subjectKey(),
       path: z.string().min(1).max(1024),
       title: z.string().min(1).max(256),
-      content: z.string().max(MAX_CONTENT).optional(),
+      // Required, like the API decoder; "" is an empty document.
+      content: z.string().max(MAX_CONTENT),
       tags: z.array(z.string().min(1).max(40)).max(32).optional(),
     }),
     z.object({

@@ -342,7 +342,7 @@ const contractOperations = () =>
           subject: contractKey(),
           path: z.string().min(1).max(1024),
           title: z.string().min(1).max(256),
-          content: z.string().max(524288).optional(),
+          content: z.string().max(524288),
           tags: z.array(z.string().min(1).max(40)).max(32).optional(),
         }),
         z.object({
@@ -598,7 +598,8 @@ describe("authoring plan tools — requests and results", () => {
       container: { type: "workspace", id: "ws_1" },
       subjects: SUBJECTS,
       operations: [
-        { action: "create", subject: "billing", path: "billing/invoices.md", title: "Invoices" },
+        // An empty body is allowed; the content itself is required.
+        { action: "create", subject: "billing", path: "billing/invoices.md", title: "Invoices", content: "" },
         { action: "update", subject: "billing", specificationId: "s_2", expectedVersion: 3, content: "# Refunds", changeNote: "Merged." },
         // Fields of another action are stripped, never forwarded.
         { action: "reuse", subject: "billing", specificationId: "s_3", expectedVersion: 1, content: "ignored" },
@@ -627,7 +628,7 @@ describe("authoring plan tools — requests and results", () => {
         container: { type: "workspace", id: "ws_1" },
         subjects: SUBJECTS,
         operations: [
-          { action: "create", subject: "billing", path: "billing/invoices.md", title: "Invoices" },
+          { action: "create", subject: "billing", path: "billing/invoices.md", title: "Invoices", content: "" },
           { action: "update", subject: "billing", specificationId: "s_2", expectedVersion: 3, content: "# Refunds", changeNote: "Merged." },
           { action: "reuse", subject: "billing", specificationId: "s_3", expectedVersion: 1 },
         ],
@@ -731,7 +732,10 @@ describe("authoring plan tools — schema refusals", () => {
     ["prepare", "no operations", { ...prepare, operations: [] }],
     ["prepare", "51 operations", { ...prepare, operations: Array.from({ length: 51 }, () => CREATE_OP) }],
     ["prepare", "unknown action", { ...prepare, operations: [{ ...CREATE_OP, action: "delete" }] }],
-    ["prepare", "create without path", { ...prepare, operations: [{ action: "create", subject: "billing", title: "T" }] }],
+    ["prepare", "create without path", { ...prepare, operations: [{ action: "create", subject: "billing", title: "T", content: "" }] }],
+    ["prepare", "create without content", { ...prepare, operations: [{ action: "create", subject: "billing", path: "billing/a.md", title: "T" }] }],
+    ["validate", "create without content", { ...validate, operations: [{ action: "create", subject: "billing", path: "billing/a.md", title: "T" }] }],
+    ["apply", "create without content", { ...apply, operations: [{ action: "create", subject: "billing", path: "billing/a.md", title: "T" }] }],
     ["prepare", "create content too long", { ...prepare, operations: [{ ...CREATE_OP, content: "a".repeat(524289) }] }],
     ["prepare", "33 tags", { ...prepare, operations: [{ ...CREATE_OP, tags: Array.from({ length: 33 }, (_, i) => `t${i}`) }] }],
     ["prepare", "tag 41", { ...prepare, operations: [{ ...CREATE_OP, tags: ["t".repeat(41)] }] }],

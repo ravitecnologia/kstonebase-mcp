@@ -269,7 +269,8 @@ export type AuthoringOperation =
       subject: string;
       path: string;
       title: string;
-      content?: string;
+      /** Required; "" is an empty document. */
+      content: string;
       tags?: string[];
     }
   | {
