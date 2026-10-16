@@ -1,7 +1,8 @@
 // MCP-side error mapping (per Kstonebase spec "mcp-server" §5 "Error mapping",
 // "mcp-open-question-management" §6, "mcp-board-tools" §2.1,
-// "workspace-agent-instructions" (frozen contract, PBI 176) and
-// "mcp-engineering-tools" ME6 (PBI 230)). Translates
+// "workspace-agent-instructions" (frozen contract, PBI 176),
+// "mcp-engineering-tools" ME6 (PBI 230) and "specification-authoring/
+// protocol" T5 (frozen client contract v1, PBI 276)). Translates
 // Kstonebase API error envelopes into MCP error codes the agent can reason
 // about, each carrying a short remediation string plus the API's actionable
 // details.
@@ -111,7 +112,33 @@ export type McpStructuredCode =
   | "PULL_REQUEST_NOT_OPEN"
   | "PULL_REQUEST_DRAFT"
   | "PULL_REQUEST_NOT_MERGEABLE"
-  | "INVALID_REFERENCE";
+  | "INVALID_REFERENCE"
+  // Specification authoring (MCP › specification-authoring/protocol.md
+  // "Frozen client contract (v1)" T5; API › specification-authoring/
+  // contracts.md §N). The API sends them in `details.code` on every tool.
+  // PAYLOAD_TOO_LARGE is any 413 answer; AUTHORING_UNSUPPORTED is raised
+  // here for a server without the authoring routes.
+  | "BODY_HISTORY_VIOLATION"
+  | "REVIEW_COVERAGE_INCOMPLETE"
+  | "CONTENT_TOO_LARGE"
+  | "INVALID_CONTENT"
+  | "INVALID_PATH"
+  | "PATH_CONFLICT"
+  | "PATH_CASE_CONFLICT"
+  | "INDEX_CONFLICT"
+  | "INDEX_REQUIRED"
+  | "SPEC_NOT_ARCHIVED"
+  | "AUTHORING_REVISION_REQUIRED"
+  | "AUTHORING_REVISION_STALE"
+  | "AUTHORING_PLAN_STALE"
+  | "AUTHORING_PLAN_INVALID"
+  | "IDEMPOTENCY_KEY_CONFLICT"
+  | "AUTHORING_UNAVAILABLE"
+  | "INVALID_PLAN_REQUEST"
+  | "PAYLOAD_TOO_LARGE"
+  | "CONTAINER_ARCHIVED"
+  | "INVALID_TARGET"
+  | "AUTHORING_UNSUPPORTED";
 
 export interface ApiErrorBody {
   error?: {
@@ -157,8 +184,43 @@ export type BoardDetailKey = (typeof BOARD_DETAIL_KEYS)[number];
 /** The `error.details` keys an engineering tool passes on (ME6). */
 export type EngineeringDetailKey = (typeof ENGINEERING_DETAIL_KEYS)[number];
 
+/**
+ * The `error.details` keys passed on for the authoring codes (T5). `findings`
+ * and `dependents` are rebuilt from their listed keys only, and every string
+ * is clipped to MAX_DETAIL_STRING characters.
+ */
+const AUTHORING_DETAIL_KEYS = [
+  "findings",
+  "total",
+  "truncated",
+  "truncatedFindings",
+  "remediation",
+  "reason",
+  "rule",
+  "field",
+  "path",
+  "existingId",
+  "existingPath",
+  "folder",
+  "dependentCount",
+  "dependents",
+  "currentRevision",
+  "digest",
+  "limitBytes",
+  "sizeBytes",
+  "status",
+  "hint",
+  "requested",
+  "supported",
+] as const;
+
+export type AuthoringDetailKey = (typeof AUTHORING_DETAIL_KEYS)[number];
+
 export type McpFailureDetails = Partial<
-  Record<ActionableDetailKey | BoardDetailKey | EngineeringDetailKey, unknown>
+  Record<
+    ActionableDetailKey | BoardDetailKey | EngineeringDetailKey | AuthoringDetailKey,
+    unknown
+  >
 >;
 
 /**
@@ -172,9 +234,19 @@ export type McpFailureDetails = Partial<
  * `details.code` is the tool code and the engineering remediations and
  * details apply. "engineering-write" is the same for the engineering write
  * tools (MT-I13), whose INTERNAL_ERROR says the change may have applied.
- * "default" keeps the existing vocabulary for every other tool.
+ * "authoring" is used by the authoring context and plan requests (T5): a
+ * 404, 405 or 501 without the API error envelope is AUTHORING_UNSUPPORTED,
+ * everything else maps as in "default". "default" keeps the existing
+ * vocabulary for every other tool; its authoring codes (`details.code`
+ * first) and 413 PAYLOAD_TOO_LARGE are shared with "authoring".
  */
-export type ErrorMappingMode = "default" | "board" | "board-import" | "engineering" | "engineering-write";
+export type ErrorMappingMode =
+  | "default"
+  | "authoring"
+  | "board"
+  | "board-import"
+  | "engineering"
+  | "engineering-write";
 
 const isEngineeringMode = (mode: ErrorMappingMode): mode is "engineering" | "engineering-write" =>
   mode === "engineering" || mode === "engineering-write";
@@ -357,6 +429,51 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
   PULL_REQUEST_DRAFT: engineeringText("PULL_REQUEST_DRAFT"),
   PULL_REQUEST_NOT_MERGEABLE: engineeringText("PULL_REQUEST_NOT_MERGEABLE"),
   INVALID_REFERENCE: engineeringText("INVALID_REFERENCE"),
+  // Specification authoring (frozen client contract v1, T5): the same
+  // sentences in the package on every transport. The API's own hint and
+  // remediation details travel unchanged next to them.
+  BODY_HISTORY_VIOLATION:
+    "Keep the body as consolidated current state: remove the dated change log or history section from the content and record those decisions with append_context or a changeNote. The findings name each line.",
+  REVIEW_COVERAGE_INCOMPLETE:
+    'Cover each listed rubric dimension with substantive text, an explicit "Not applicable: <reason>" line or a native open question or assumption, then request review again.',
+  CONTENT_TOO_LARGE:
+    "Split the subject into smaller, focused specifications linked from its folder index (limit 512 KiB).",
+  INVALID_CONTENT:
+    "Remove U+0000 (NUL) characters from the title, path, tags and content, then retry.",
+  INVALID_PATH:
+    'Use a relative path without "." or ".." segments, control characters or an index.md folder segment, with at most 16 segments of 200 bytes; details.rule and details.hint name the problem.',
+  PATH_CONFLICT:
+    "A specification already exists at this path (details.existingId): update or reuse it, or choose another path.",
+  PATH_CASE_CONFLICT:
+    "The path differs from an existing path only by letter case (details.existingPath): reuse the existing spelling.",
+  INDEX_CONFLICT:
+    "Another change created this folder index at the same time: retry, and the existing index will be reused.",
+  INDEX_REQUIRED:
+    "This folder index is required by the active specifications in details.dependents: archive, delete or move them first, or keep the index.",
+  SPEC_NOT_ARCHIVED:
+    "Only an archived specification can be restored; this one is already active, so read it again.",
+  AUTHORING_REVISION_REQUIRED:
+    "Pass the authoringRevision from read_authoring_context or from the prepared plan.",
+  AUTHORING_REVISION_STALE:
+    "The Product's authoring settings or ancestor indexes changed (details.currentRevision): call read_authoring_context again, re-read the indexes and prepare a new plan.",
+  AUTHORING_PLAN_STALE:
+    "Something the plan depends on changed and nothing was applied: re-read the affected specifications, prepare and validate the plan again, then apply it with a new idempotencyKey.",
+  AUTHORING_PLAN_INVALID:
+    "The plan has blocking findings and nothing was applied: fix the operations named in details.findings, validate again, then apply.",
+  IDEMPOTENCY_KEY_CONFLICT:
+    "This idempotencyKey was already used for a different request: use a new key for a new plan, or resend the exact original request to read its outcome.",
+  AUTHORING_UNAVAILABLE:
+    "Authoring plans are not enabled on this server: create or update one specification at a time with the single-specification tools.",
+  INVALID_PLAN_REQUEST:
+    "The plan request has the wrong shape (details.field, details.rule): correct that field and send the request again.",
+  PAYLOAD_TOO_LARGE:
+    "The request is too large: split the plan into smaller plans (at most 4 MiB).",
+  CONTAINER_ARCHIVED:
+    "The Product or Workspace is archived: restore it before changing its specifications.",
+  INVALID_TARGET:
+    "Pass exactly one target: a workspaceId, productId or specificationId.",
+  AUTHORING_UNSUPPORTED:
+    "This Kstonebase server does not support authoring context or plans yet. Use the single-specification tools and tell the user the authoring rules could not be checked.",
 };
 
 // Board-specific wording for shared codes (MCP › mcp-board-tools.md §2.1,
@@ -413,6 +530,33 @@ const POLICY_CODES: Readonly<Record<string, McpStructuredCode>> = {
   POLICY_UNSUPPORTED: "POLICY_UNSUPPORTED",
 };
 
+// Specification authoring codes (T5): the API sends them in `details.code`
+// under a generic envelope (VALIDATION_ERROR, CONFLICT, NOT_FOUND,
+// PRECONDITION_REQUIRED…), so they win on every default-mode tool — a
+// PATH_CONFLICT on create_free_specification is PATH_CONFLICT, not the
+// STALE_VERSION its 409 status would suggest.
+const AUTHORING_CODES: Readonly<Record<string, McpStructuredCode>> = {
+  BODY_HISTORY_VIOLATION: "BODY_HISTORY_VIOLATION",
+  REVIEW_COVERAGE_INCOMPLETE: "REVIEW_COVERAGE_INCOMPLETE",
+  CONTENT_TOO_LARGE: "CONTENT_TOO_LARGE",
+  INVALID_CONTENT: "INVALID_CONTENT",
+  INVALID_PATH: "INVALID_PATH",
+  PATH_CONFLICT: "PATH_CONFLICT",
+  PATH_CASE_CONFLICT: "PATH_CASE_CONFLICT",
+  INDEX_CONFLICT: "INDEX_CONFLICT",
+  INDEX_REQUIRED: "INDEX_REQUIRED",
+  SPEC_NOT_ARCHIVED: "SPEC_NOT_ARCHIVED",
+  AUTHORING_REVISION_REQUIRED: "AUTHORING_REVISION_REQUIRED",
+  AUTHORING_REVISION_STALE: "AUTHORING_REVISION_STALE",
+  AUTHORING_PLAN_STALE: "AUTHORING_PLAN_STALE",
+  AUTHORING_PLAN_INVALID: "AUTHORING_PLAN_INVALID",
+  IDEMPOTENCY_KEY_CONFLICT: "IDEMPOTENCY_KEY_CONFLICT",
+  AUTHORING_UNAVAILABLE: "AUTHORING_UNAVAILABLE",
+  INVALID_PLAN_REQUEST: "INVALID_PLAN_REQUEST",
+  CONTAINER_ARCHIVED: "CONTAINER_ARCHIVED",
+  INVALID_TARGET: "INVALID_TARGET",
+};
+
 // Specification and question codes. The API sends them in `details.code`
 // under a generic envelope (CONFLICT, BAD_REQUEST, NOT_FOUND, SPEC_LOCKED…),
 // so `details.code` is consulted first for these.
@@ -433,8 +577,28 @@ const DETAIL_FIRST_CODES: Readonly<Record<string, McpStructuredCode>> = {
   SECTION_AMBIGUOUS: "SECTION_AMBIGUOUS",
   ANSWER_REQUIRED: "ANSWER_REQUIRED",
   INVALID_TRANSITION: "INVALID_TRANSITION",
+  ...AUTHORING_CODES,
   ...POLICY_CODES,
 };
+
+// The codes whose details use the authoring allowlist (T5): the authoring
+// codes themselves, the client-side AUTHORING_UNSUPPORTED and
+// PAYLOAD_TOO_LARGE get exactly AUTHORING_DETAIL_KEYS; the codes T5 shares
+// with older contracts (SPEC_LOCKED, SPEC_ARCHIVED, PRODUCT_TYPE_*, policy)
+// keep their existing keys and gain the authoring ones.
+const AUTHORING_DETAIL_CODES: ReadonlySet<McpStructuredCode> = new Set<McpStructuredCode>([
+  ...Object.values(AUTHORING_CODES),
+  "PAYLOAD_TOO_LARGE",
+  "AUTHORING_UNSUPPORTED",
+]);
+
+const SHARED_AUTHORING_DETAIL_CODES: ReadonlySet<McpStructuredCode> = new Set<McpStructuredCode>([
+  "SPEC_LOCKED",
+  "SPEC_ARCHIVED",
+  "PRODUCT_TYPE_MISMATCH",
+  "PRODUCT_TYPE_UNSUPPORTED",
+  ...Object.values(POLICY_CODES),
+]);
 
 // Credential, scope and binding codes keep the pre-2.2.0 resolution, per
 // spec "mcp-open-question-management" §6 ("retain existing credential/auth
@@ -571,6 +735,10 @@ const BOARD_DETAIL_CODES: Readonly<Record<string, McpStructuredCode>> = {
  * `details.code`, then the status code's standard meaning). Actionable
  * details (hint, reason, fields, status, sectionPath, from, to) travel with
  * the error so the agent can re-read and decide instead of retrying blindly.
+ * The specification authoring codes (T5) are read from `details.code` first
+ * too, carry the authoring detail allowlist, and a 413 is PAYLOAD_TOO_LARGE;
+ * "authoring" mode adds AUTHORING_UNSUPPORTED for a route without the API
+ * error envelope.
  *
  * In "board" mode (native Board tools only) every known `details.code` wins,
  * the Board remediations apply and the Board detail allowlist (field,
@@ -627,14 +795,42 @@ export function mapApiError(
       details,
     );
   }
-  const { code, source } = pickStructuredCode(status, apiCode, detailCode);
-  const details = pickDetails(rawDetails, ACTIONABLE_DETAIL_KEYS);
+  if (mode === "authoring") {
+    // An older API or an older Website proxy answers an authoring route
+    // without any Kstonebase error envelope (an HTML or plain-text 404,
+    // a 405 or a 501): nothing was checked or written.
+    const unsupported =
+      apiCode === undefined &&
+      detailCode === undefined &&
+      (status === 404 || status === 405 || status === 501);
+    if (unsupported) {
+      return new McpToolError(
+        "AUTHORING_UNSUPPORTED",
+        "This Kstonebase server does not provide authoring context or plans.",
+        REMEDIATIONS.AUTHORING_UNSUPPORTED,
+      );
+    }
+  }
+  // A 413 is PAYLOAD_TOO_LARGE whoever answered it (the API or the
+  // Website's request bound), T5.
+  const { code, source } =
+    status === 413
+      ? { code: "PAYLOAD_TOO_LARGE" as const, source: detailCode ?? apiCode }
+      : pickStructuredCode(status, apiCode, detailCode);
+  const details = detailsFor(code, rawDetails);
   return new McpToolError(
     code,
     apiMessage,
     remediationFor(code, source, details),
     details,
   );
+}
+
+/** The details a default- or authoring-mode failure passes on for `code`. */
+function detailsFor(code: McpStructuredCode, raw: unknown): McpFailureDetails | undefined {
+  if (AUTHORING_DETAIL_CODES.has(code)) return pickAuthoringDetails(raw, false);
+  if (SHARED_AUTHORING_DETAIL_CODES.has(code)) return pickAuthoringDetails(raw, true);
+  return pickDetails(raw, ACTIONABLE_DETAIL_KEYS);
 }
 
 /** The MCP code plus the API machine code that decided it, if any. */
@@ -704,7 +900,7 @@ function extractDetailCode(details: unknown): string | undefined {
 
 function pickDetails(
   details: unknown,
-  keys: readonly (ActionableDetailKey | BoardDetailKey | EngineeringDetailKey)[],
+  keys: readonly (ActionableDetailKey | BoardDetailKey | EngineeringDetailKey | AuthoringDetailKey)[],
 ): McpFailureDetails | undefined {
   if (!details || typeof details !== "object" || Array.isArray(details)) {
     return undefined;
@@ -717,6 +913,111 @@ function pickDetails(
     }
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// Authoring detail bounds (T5).
+const MAX_DETAIL_STRING = 2_000;
+const MAX_DETAIL_FINDINGS = 50;
+const MAX_DETAIL_DEPENDENTS = 5;
+const FINDING_KEYS = [
+  "ruleId",
+  "severity",
+  "message",
+  "operation",
+  "path",
+  "subject",
+  "location",
+  "excerpt",
+  "dimension",
+  "remediation",
+] as const;
+
+/**
+ * The authoring allowlist (T5), sanitized: `findings` keep at most 50
+ * objects with only their listed keys (`location` only `line` and
+ * `heading`), `dependents` at most 5 `{id, path}`, and every string is
+ * clipped to 2,000 characters. With `withExisting`, the existing actionable
+ * keys of the shared codes are kept as before.
+ */
+function pickAuthoringDetails(
+  details: unknown,
+  withExisting: boolean,
+): McpFailureDetails | undefined {
+  if (!details || typeof details !== "object" || Array.isArray(details)) {
+    return undefined;
+  }
+  const source = details as Record<string, unknown>;
+  const out: McpFailureDetails = withExisting ? { ...pickDetails(details, ACTIONABLE_DETAIL_KEYS) } : {};
+  for (const key of AUTHORING_DETAIL_KEYS) {
+    if (!Object.hasOwn(source, key) || source[key] === undefined) continue;
+    const value = source[key];
+    if (key === "findings") {
+      if (Array.isArray(value)) out.findings = sanitizeFindings(value);
+    } else if (key === "dependents") {
+      if (Array.isArray(value)) out.dependents = sanitizeDependents(value);
+    } else {
+      out[key] = clipStrings(value, 0);
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function sanitizeFindings(findings: unknown[]): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const entry of findings) {
+    if (out.length >= MAX_DETAIL_FINDINGS) break;
+    if (!isPlainRecord(entry)) continue;
+    const finding: Record<string, unknown> = {};
+    for (const key of FINDING_KEYS) {
+      if (!Object.hasOwn(entry, key) || entry[key] === undefined) continue;
+      const value = entry[key];
+      if (key === "location") {
+        if (!isPlainRecord(value)) continue;
+        const location: Record<string, unknown> = {};
+        if (value.line !== undefined) location.line = clipStrings(value.line, 2);
+        if (value.heading !== undefined) location.heading = clipStrings(value.heading, 2);
+        finding.location = location;
+      } else {
+        finding[key] = clipStrings(value, 2);
+      }
+    }
+    out.push(finding);
+  }
+  return out;
+}
+
+function sanitizeDependents(dependents: unknown[]): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const entry of dependents) {
+    if (out.length >= MAX_DETAIL_DEPENDENTS) break;
+    if (!isPlainRecord(entry)) continue;
+    const dependent: Record<string, unknown> = {};
+    if (entry.id !== undefined) dependent.id = clipStrings(entry.id, 2);
+    if (entry.path !== undefined) dependent.path = clipStrings(entry.path, 2);
+    out.push(dependent);
+  }
+  return out;
+}
+
+/** Clip every string (in nested arrays and objects too) to 2,000 characters. */
+function clipStrings(value: unknown, depth: number): unknown {
+  if (typeof value === "string") return clipString(value);
+  if (depth >= 4 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((item) => clipStrings(item, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) out[key] = clipStrings(item, depth + 1);
+  return out;
+}
+
+function clipString(text: string): string {
+  if (text.length <= MAX_DETAIL_STRING) return text;
+  // Count code points, so a surrogate pair is never split.
+  const points = Array.from(text);
+  return points.length <= MAX_DETAIL_STRING ? text : points.slice(0, MAX_DETAIL_STRING).join("");
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function remediationFor(
@@ -744,6 +1045,10 @@ export function buildClientFailure(code: McpStructuredCode, message: string): Mc
 }
 
 /** A locally raised tool error carrying the code's default remediation. */
-export function toolError(code: McpStructuredCode, message: string): McpToolError {
-  return new McpToolError(code, message, REMEDIATIONS[code]);
+export function toolError(
+  code: McpStructuredCode,
+  message: string,
+  details?: McpFailureDetails,
+): McpToolError {
+  return new McpToolError(code, message, REMEDIATIONS[code], details);
 }

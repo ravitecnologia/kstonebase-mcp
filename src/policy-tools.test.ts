@@ -509,7 +509,8 @@ describe("get_effective_instructions — results", () => {
     const { fetcher } = stubApi({ policyReply: () => replies.shift()! });
     const { mcp, close } = await connect(fetcher);
     const invalid = await call(mcp, "get_effective_instructions", { workspaceId: "ws_1" });
-    expect(invalid.data).toMatchObject({ code: "VALIDATION_ERROR", message: "Invalid target." });
+    // details.code wins on every tool since the authoring contract (T5).
+    expect(invalid.data).toMatchObject({ code: "INVALID_TARGET", message: "Invalid target." });
     const notFound = await call(mcp, "get_effective_instructions", { workspaceId: "ws_1" });
     expect(notFound.data).toMatchObject({ code: "NOT_FOUND", message: "Not found." });
     const empty = await call(mcp, "get_effective_instructions", { workspaceId: "ws_1" });

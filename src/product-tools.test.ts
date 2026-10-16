@@ -169,6 +169,8 @@ describe("create_product (PBI 271)", () => {
         "New Products always use the flexible document model. Omit specificationManagementType.",
       );
       expect(failure.details).toEqual({
+        requested: "web_application",
+        supported: ["free"],
         hint: "Omit specificationManagementType; new Products always use the flexible document model.",
       });
       const text = (res.content as Array<{ type: string; text: string }>)[0]!.text;
