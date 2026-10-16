@@ -531,13 +531,14 @@ describe("engineering tools — catalog", () => {
     expect(catalog.map((t) => t.name)).toEqual(ENGINEERING);
   });
 
-  it("registers the 27 tools after the existing 41, with the contract annotations and sentence", async () => {
+  it("registers the 27 tools after the existing 45, with the contract annotations and sentence", async () => {
     const { fetcher } = recorder(replyFor);
     const { mcp, close } = await connect(fetcher);
     const { tools } = await mcp.listTools();
-    expect(tools).toHaveLength(68);
-    expect(tools.slice(41).map((t) => t.name)).toEqual(ENGINEERING);
-    for (const tool of tools.slice(41)) {
+    // 41 tools, plus the 4 specification authoring tools of PBI 276.
+    expect(tools).toHaveLength(72);
+    expect(tools.slice(45).map((t) => t.name)).toEqual(ENGINEERING);
+    for (const tool of tools.slice(45)) {
       expect(tool.annotations, tool.name).toEqual(CONTRACT_ANNOTATIONS[tool.name]);
       expect(tool.description?.endsWith(SENTENCE), tool.name).toBe(true);
       const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };

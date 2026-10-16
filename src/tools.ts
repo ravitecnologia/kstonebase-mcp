@@ -8,11 +8,33 @@
 // tool that addresses a Workspace, Product or specification ends with one
 // policy notice item plus `_meta["kstonebase.com/policy"]`, and every API
 // write tool accepts `expectedPolicyRevision`.
+//
+// Specification authoring (MCP › specification-authoring/protocol.md "Frozen
+// client contract (v1)", PBI 276): read_authoring_context and the
+// prepare/validate/apply plan tools, plus the authoring notice that
+// read_workspace, read_product, list_specifications, read_specification and
+// create_free_specification insert right before their policy notice.
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 
+import {
+  APPLY_AUTHORING_PLAN_DESCRIPTION,
+  APPLY_AUTHORING_PLAN_TITLE,
+  AuthoringNotices,
+  PREPARE_AUTHORING_PLAN_DESCRIPTION,
+  PREPARE_AUTHORING_PLAN_TITLE,
+  READ_AUTHORING_CONTEXT_DESCRIPTION,
+  READ_AUTHORING_CONTEXT_TITLE,
+  VALIDATE_AUTHORING_PLAN_DESCRIPTION,
+  VALIDATE_AUTHORING_PLAN_TITLE,
+  applyAuthoringPlanInput,
+  prepareAuthoringPlanInput,
+  readAuthoringContextInput,
+  resolveAuthoringTarget,
+  validateAuthoringPlanInput,
+} from "./authoring.js";
 import type { KstonebaseClient, WriteOptions } from "./client.js";
 import type { ResolvedConfig } from "./config.js";
 import {
@@ -43,6 +65,8 @@ interface ToolDeps {
    * created when it is omitted.
    */
   policy?: PolicyNotices;
+  /** Builds the authoring notices (no cache); a fresh one when omitted. */
+  authoring?: AuthoringNotices;
 }
 
 const READ_TOOL: ToolAnnotations = {
@@ -62,6 +86,31 @@ const OVERWRITE_WRITE_TOOL: ToolAnnotations = {
   destructiveHint: true,
   openWorldHint: false,
 };
+
+/** apply_authoring_plan (T3): replaces Draft content; keyed, so idempotent. */
+const AUTHORING_APPLY_TOOL: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+// Sentences appended (after one space) to existing descriptions by the
+// specification authoring contract (T7, verbatim).
+const CREATE_FREE_SPECIFICATION_AUTHORING =
+  "On governed content the path is validated, every missing ancestor index.md is created in the same transaction and returned in indexEffects (expected, not duplicates), and the body is checked: a dated change log is refused with BODY_HISTORY_VIOLATION (record history with append_context or changeNote instead) and coverage gaps return as authoringFindings warnings. One subject per document; for several subjects use prepare_authoring_plan.";
+
+const UPDATE_SPECIFICATION_AUTHORING =
+  "Governed Drafts are checked on the resulting document: a dated change log is refused with BODY_HISTORY_VIOLATION and nothing is written; keep the body as consolidated current state and put rationale in changeNote or append_context. Warnings return as authoringFindings.";
+
+const REQUEST_REVIEW_AUTHORING =
+  'On governed content every rubric dimension of the effective detail level must have substantive text, an explicit "Not applicable: <reason>" or a native open question or assumption; otherwise REVIEW_COVERAGE_INCOMPLETE lists the findings and the status does not change.';
+
+const APPEND_CONTEXT_AUTHORING =
+  "This is the destination for decisions, rationale and change history: never write dated change logs into the specification body.";
+
+const CREATE_PRODUCT_AUTHORING =
+  "The new Product uses the flexible document model and, when the authoring foundation is enabled, already contains its root index.md (returned in authoring.rootIndex).";
 
 // Open-question tool descriptions (Kstonebase MCP spec
 // "mcp-open-question-management", implementation contract §6). The contract
@@ -436,12 +485,14 @@ function fail(failure: McpFailure): ToolResult {
   };
 }
 
-/** Lets a tool body declare what its call addresses, for the policy notice. */
+/** Lets a tool body declare what its call addresses, for the notices. */
 export interface ToolCall {
   /** The Workspace, Product or specification this call addresses. */
   addresses(target: PolicyTarget, resolved?: PolicyOutcome): void;
-  /** The results span several Workspaces or standalone Products. */
+  /** The results span several Workspaces or standalone Products (and so no single authoring context). */
   spansScopes(): void;
+  /** The Workspace, Product or specification whose authoring context the result carries (T4). */
+  authoring(target: PolicyTarget): void;
 }
 
 export type ToolBody = (call: ToolCall) => Promise<ToolResult>;
@@ -452,9 +503,11 @@ export type ToolBody = (call: ToolCall) => Promise<ToolResult>;
  * to INTERNAL_ERROR — agents can decide whether to retry. Tool calls also
  * emit a debug log line matching the spec's `tool / productId / specId /
  * durationMs / errorCode` shape. A successful result whose body declared a
- * scope gets its policy notice appended (failed results never do).
+ * scope gets its policy notice appended (failed results never do); one that
+ * declared an authoring target first gets its authoring notice, so the
+ * policy notice stays the last item.
  */
-export function createToolRunner(policy: PolicyNotices) {
+export function createToolRunner(policy: PolicyNotices, authoring?: AuthoringNotices) {
   return async function runTool(
     name: string,
     context: Record<string, unknown>,
@@ -463,6 +516,7 @@ export function createToolRunner(policy: PolicyNotices) {
     const startedAt = Date.now();
     let scope: PolicyScope | undefined;
     let resolved: PolicyOutcome | undefined;
+    let authoringTarget: PolicyTarget | undefined;
     const call: ToolCall = {
       addresses(target, outcome) {
         scope = { kind: "target", target };
@@ -471,10 +525,17 @@ export function createToolRunner(policy: PolicyNotices) {
       spansScopes() {
         scope = { kind: "multiple-scopes" };
         resolved = undefined;
+        authoringTarget = undefined;
+      },
+      authoring(target) {
+        authoringTarget = target;
       },
     };
     try {
       const result = await body(call);
+      if (authoring && authoringTarget && result.isError !== true) {
+        await authoring.decorate(result, authoringTarget);
+      }
       if (scope && result.isError !== true) {
         await policy.decorate(result, scope, resolved);
       }
@@ -518,7 +579,7 @@ export function registerReadTools(
 ): void {
   const { client, config } = deps;
   const policy = deps.policy ?? new PolicyNotices(client);
-  const runTool = createToolRunner(policy);
+  const runTool = createToolRunner(policy, deps.authoring ?? new AuthoringNotices(client));
 
   // Effective Workspace instructions (frozen contract PBI 176, decision M1:
   // a tool, so it reaches every transport identically).
@@ -553,6 +614,91 @@ export function registerReadTools(
           // The notice reuses this same fresh resolver answer.
           call.addresses(target, fetched.outcome);
           return ok({ target, policy: fetched.policy });
+        },
+      ),
+  );
+
+  // ────────────────────────────────────────────────────────────────────
+  // Specification authoring reads (frozen client contract v1, T1–T3).
+  // Results are the API bodies, unchanged, with the Workspace instructions
+  // notice of the target (context) or the plan's container; prepare and
+  // validate change nothing and never send a policy precondition.
+  // ────────────────────────────────────────────────────────────────────
+
+  server.registerTool(
+    "read_authoring_context",
+    {
+      title: READ_AUTHORING_CONTEXT_TITLE,
+      description: READ_AUTHORING_CONTEXT_DESCRIPTION,
+      annotations: READ_TOOL,
+      inputSchema: readAuthoringContextInput(),
+    },
+    async (args) =>
+      runTool(
+        "read_authoring_context",
+        {
+          workspaceId: args.workspaceId,
+          productId: args.productId,
+          specId: args.specificationId,
+        },
+        async (call) => {
+          const target = resolveAuthoringTarget(config, args);
+          call.addresses(target);
+          const res = await client.readAuthoringContext(target);
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "prepare_authoring_plan",
+    {
+      title: PREPARE_AUTHORING_PLAN_TITLE,
+      description: PREPARE_AUTHORING_PLAN_DESCRIPTION,
+      annotations: READ_TOOL,
+      inputSchema: prepareAuthoringPlanInput(),
+    },
+    async (args) =>
+      runTool(
+        "prepare_authoring_plan",
+        { containerType: args.container.type, containerId: args.container.id },
+        async (call) => {
+          call.addresses({ type: args.container.type, id: args.container.id });
+          const res = await client.prepareAuthoringPlan({
+            container: args.container,
+            authoringRevision: args.authoringRevision,
+            subjects: args.subjects,
+            operations: args.operations,
+            indexContent: args.indexContent,
+          });
+          return ok(res.body);
+        },
+      ),
+  );
+
+  server.registerTool(
+    "validate_authoring_plan",
+    {
+      title: VALIDATE_AUTHORING_PLAN_TITLE,
+      description: VALIDATE_AUTHORING_PLAN_DESCRIPTION,
+      annotations: READ_TOOL,
+      inputSchema: validateAuthoringPlanInput(),
+    },
+    async (args) =>
+      runTool(
+        "validate_authoring_plan",
+        { containerType: args.container.type, containerId: args.container.id },
+        async (call) => {
+          call.addresses({ type: args.container.type, id: args.container.id });
+          const res = await client.validateAuthoringPlan({
+            container: args.container,
+            authoringRevision: args.authoringRevision,
+            subjects: args.subjects,
+            operations: args.operations,
+            indexContent: args.indexContent,
+            planDigest: args.planDigest,
+          });
+          return ok(res.body);
         },
       ),
   );
@@ -616,6 +762,7 @@ export function registerReadTools(
       runTool("read_product", { productId: args.productId }, async (call) => {
         const productId = requireProductId(config, args.productId);
         call.addresses({ type: "product", id: productId });
+        call.authoring({ type: "product", id: productId });
         const res = await client.readProduct(productId);
         return ok(res.body);
       }),
@@ -639,6 +786,7 @@ export function registerReadTools(
         async (call) => {
           const wsId = requireWorkspaceId(config, args.workspaceId);
           call.addresses({ type: "workspace", id: wsId });
+          call.authoring({ type: "workspace", id: wsId });
           const res = await client.readWorkspace(wsId);
           return ok(res.body);
         },
@@ -680,6 +828,8 @@ export function registerReadTools(
         async (call) => {
           const target = resolveListSpecificationsTarget(config, args);
           call.addresses({ type: target.scope, id: target.id });
+          // Always one resolved container here, so one authoring context.
+          call.authoring({ type: target.scope, id: target.id });
           const query = {
             type: args.type,
             status: args.status,
@@ -754,6 +904,7 @@ export function registerReadTools(
     async (args) =>
       runTool("read_specification", { specId: args.specId }, async (call) => {
         call.addresses({ type: "specification", id: args.specId });
+        call.authoring({ type: "specification", id: args.specId });
         const res = await client.readSpecification(args.specId, {
           format: args.format,
         });
@@ -1145,7 +1296,10 @@ export function registerWriteTools(
   deps: ToolDeps,
 ): void {
   const { client, config } = deps;
-  const runTool = createToolRunner(deps.policy ?? new PolicyNotices(client));
+  const runTool = createToolRunner(
+    deps.policy ?? new PolicyNotices(client),
+    deps.authoring ?? new AuthoringNotices(client),
+  );
 
   server.registerTool(
     "start_new_version",
@@ -1172,7 +1326,7 @@ export function registerWriteTools(
     {
       title: "Replace a draft's full content",
       description:
-        "Replace the entire Markdown body of a Draft specification. Side effect: content + OCC version are updated. Pass `version` from the most recent read to detect concurrent edits. Returns 409 STALE_VERSION when another writer landed first — re-read and retry. Pass `changeNote` to record why the content changed; it is stored as a change entry rather than inside the document.",
+        `Replace the entire Markdown body of a Draft specification. Side effect: content + OCC version are updated. Pass \`version\` from the most recent read to detect concurrent edits. Returns 409 STALE_VERSION when another writer landed first — re-read and retry. Pass \`changeNote\` to record why the content changed; it is stored as a change entry rather than inside the document. ${UPDATE_SPECIFICATION_AUTHORING}`,
       annotations: OVERWRITE_WRITE_TOOL,
       inputSchema: {
         specId: z.string().min(1),
@@ -1207,7 +1361,7 @@ export function registerWriteTools(
     {
       title: "Replace a single section of a draft",
       description:
-        'Replace one heading-bound section of a Draft specification (e.g. sectionPath="## Pricing"). Side effect: the section text is replaced atomically, a before-image revision is recorded, and a change entry logs the edit. OCC-guarded — pass `version` from the most recent read. Pass `changeNote` to say why; it becomes the change entry\'s body instead of an auto-generated one.',
+        `Replace one heading-bound section of a Draft specification (e.g. sectionPath="## Pricing"). Side effect: the section text is replaced atomically, a before-image revision is recorded, and a change entry logs the edit. OCC-guarded — pass \`version\` from the most recent read. Pass \`changeNote\` to say why; it becomes the change entry's body instead of an auto-generated one. ${UPDATE_SPECIFICATION_AUTHORING}`,
       annotations: OVERWRITE_WRITE_TOOL,
       inputSchema: {
         specId: z.string().min(1),
@@ -1244,7 +1398,7 @@ export function registerWriteTools(
     {
       title: "Request review on a draft",
       description:
-        "Move a Draft specification to Needs Review so a human can mark it Reviewed in Kstonebase. Open questions do not block it: they stay open for the reviewer. An older Kstonebase server may still refuse with OPEN_QUESTIONS_PRESENT; then surface the open questions to the user.",
+        `Move a Draft specification to Needs Review so a human can mark it Reviewed in Kstonebase. Open questions do not block it: they stay open for the reviewer. An older Kstonebase server may still refuse with OPEN_QUESTIONS_PRESENT; then surface the open questions to the user. ${REQUEST_REVIEW_AUTHORING}`,
       annotations: ADDITIVE_WRITE_TOOL,
       inputSchema: {
         specId: z.string().min(1),
@@ -1404,7 +1558,7 @@ export function registerWriteTools(
     {
       title: "Create a Product in the bound Workspace",
       description:
-        "Create a new Product inside the bound Workspace. New Products use the flexible document model. Requires a Workspace-scope binding; product-allowlist credentials cannot create Products.",
+        `Create a new Product inside the bound Workspace. New Products use the flexible document model. Requires a Workspace-scope binding; product-allowlist credentials cannot create Products. ${CREATE_PRODUCT_AUTHORING}`,
       annotations: ADDITIVE_WRITE_TOOL,
       // No management-type choice (PBI 271): every new Product uses the
       // flexible document model. The deprecated, free-form field stays only
@@ -1455,7 +1609,7 @@ export function registerWriteTools(
     {
       title: "Record a decision or note against a spec",
       description:
-        "Record a decision or note against a specification as an immutable change entry. Side effect: one change entry is created and linked to the spec. The specification's own content is NOT modified, so this works on any non-archived spec and needs no start_new_version. Use update_specification_section when the consolidated document itself should change. Read the entries back with list_specification_changes.",
+        `Record a decision or note against a specification as an immutable change entry. Side effect: one change entry is created and linked to the spec. The specification's own content is NOT modified, so this works on any non-archived spec and needs no start_new_version. Use update_specification_section when the consolidated document itself should change. Read the entries back with list_specification_changes. ${APPEND_CONTEXT_AUTHORING}`,
       annotations: ADDITIVE_WRITE_TOOL,
       inputSchema: {
         specId: z.string().min(1),
@@ -1551,7 +1705,7 @@ export function registerWriteTools(
     {
       title: "Create a Markdown specification",
       description:
-        "Create a new Markdown specification in the bound Product (Products that use the flexible document model). Side effect: a new spec row is created at status=Draft, approvedVersion=1. Path uniqueness is enforced. Rejected with PRODUCT_TYPE_MISMATCH on a structured legacy Product — use start_new_version on one of its existing specs instead.",
+        `Create a new Markdown specification in the bound Product (Products that use the flexible document model). Side effect: a new spec row is created at status=Draft, approvedVersion=1. Path uniqueness is enforced. Rejected with PRODUCT_TYPE_MISMATCH on a structured legacy Product — use start_new_version on one of its existing specs instead. ${CREATE_FREE_SPECIFICATION_AUTHORING}`,
       annotations: ADDITIVE_WRITE_TOOL,
       inputSchema: {
         productId: z.string().optional(),
@@ -1576,6 +1730,51 @@ export function registerWriteTools(
               path: args.path,
               tags: args.tags,
               content: args.content,
+            },
+            writeOptions(args),
+          );
+          // The created specification's context (its new ancestor indexes
+          // included); the Product's when the result carries no id.
+          const createdId = (res.body as { id?: unknown } | null)?.id;
+          call.authoring(
+            typeof createdId === "string" && createdId.length > 0
+              ? { type: "specification", id: createdId }
+              : { type: "product", id: productId },
+          );
+          return ok(res.body);
+        },
+      ),
+  );
+
+  // Specification authoring write (frozen client contract v1, T3): the plan
+  // is applied atomically by the API; the idempotencyKey travels in the body
+  // and expectedPolicyRevision only as the header. Never retried here.
+  server.registerTool(
+    "apply_authoring_plan",
+    {
+      title: APPLY_AUTHORING_PLAN_TITLE,
+      description: APPLY_AUTHORING_PLAN_DESCRIPTION,
+      annotations: AUTHORING_APPLY_TOOL,
+      inputSchema: {
+        ...applyAuthoringPlanInput(),
+        expectedPolicyRevision: expectedPolicyRevision(),
+      },
+    },
+    async (args) =>
+      runTool(
+        "apply_authoring_plan",
+        { containerType: args.container.type, containerId: args.container.id },
+        async (call) => {
+          call.addresses({ type: args.container.type, id: args.container.id });
+          const res = await client.applyAuthoringPlan(
+            {
+              container: args.container,
+              authoringRevision: args.authoringRevision,
+              subjects: args.subjects,
+              operations: args.operations,
+              indexContent: args.indexContent,
+              planDigest: args.planDigest,
+              idempotencyKey: args.idempotencyKey,
             },
             writeOptions(args),
           );

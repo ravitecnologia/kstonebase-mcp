@@ -243,6 +243,77 @@ export interface ReadBoardImportQuery extends PageQuery {
   outcome?: BoardImportOutcome;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Specification authoring (MCP › specification-authoring/protocol.md
+// "Frozen client contract (v1)" T1–T3; API › specification-authoring/
+// contracts.md). The API decodes plan requests strictly and refuses unknown
+// fields, so the client forwards exactly these fields; results (the context,
+// `{valid, plan, findings}`, the apply outcome) are passed through unchanged.
+// ──────────────────────────────────────────────────────────────────────────
+
+export interface AuthoringContainerRef {
+  type: "product" | "workspace";
+  id: string;
+}
+
+export interface AuthoringSubject {
+  key: string;
+  title: string;
+  /** "" is the container root. */
+  folder: string;
+}
+
+export type AuthoringOperation =
+  | {
+      action: "create";
+      subject: string;
+      path: string;
+      title: string;
+      content?: string;
+      tags?: string[];
+    }
+  | {
+      action: "update";
+      subject: string;
+      specificationId: string;
+      expectedVersion: number;
+      content: string;
+      changeNote?: string;
+    }
+  | {
+      action: "reuse";
+      subject: string;
+      specificationId: string;
+      expectedVersion: number;
+    };
+
+export interface AuthoringIndexContent {
+  path: string;
+  content: string;
+}
+
+/** prepare: authoringRevision is optional. */
+export interface AuthoringPlanInput {
+  container: AuthoringContainerRef;
+  authoringRevision?: string;
+  subjects: AuthoringSubject[];
+  operations: AuthoringOperation[];
+  indexContent?: AuthoringIndexContent[];
+}
+
+/** validate: the prepare request with its authoringRevision and, optionally, the planDigest. */
+export interface ValidateAuthoringPlanInput extends AuthoringPlanInput {
+  authoringRevision: string;
+  planDigest?: string;
+}
+
+/** apply: the validated request with its planDigest and an idempotencyKey (body only). */
+export interface ApplyAuthoringPlanInput extends ValidateAuthoringPlanInput {
+  planDigest: string;
+  /** Sent exactly as given; the package never generates or replaces it. */
+  idempotencyKey: string;
+}
+
 /**
  * Options every write method accepts. `policyRevision` is the agent's
  * expectedPolicyRevision: sent as the `X-Kstonebase-Policy-Revision` header,
@@ -1091,6 +1162,59 @@ export class KstonebaseClient {
   }
 
   // ────────────────────────────────────────────────────────────────────
+  // Specification authoring (`/api/mcp/authoring-context`,
+  // `/api/mcp/authoring-plans/…`, the Website proxies of the API's
+  // `/mcp/…` routes; T1–T3, T6). Errors map in "authoring" mode: a route
+  // answering 404/405/501 without the API error envelope (an older API or
+  // Website) is AUTHORING_UNSUPPORTED. Nothing here retries; prepare and
+  // validate are reads and never send a policy precondition.
+  // ────────────────────────────────────────────────────────────────────
+
+  /** GET …/authoring-context?target=<type>:<id> → the authoring context (schemaVersion 1). */
+  readAuthoringContext(target: PolicyTarget): Promise<ApiResponse<unknown>> {
+    const params = new URLSearchParams({ target: `${target.type}:${target.id}` });
+    return this.getJson(`/api/mcp/authoring-context?${params.toString()}`, "authoring");
+  }
+
+  /** POST …/authoring-plans/prepare → 200 `{ valid, plan, findings }`. */
+  prepareAuthoringPlan(input: AuthoringPlanInput): Promise<ApiResponse<unknown>> {
+    return this.sendJson(
+      "POST",
+      "/api/mcp/authoring-plans/prepare",
+      authoringPlanBody(input),
+      "authoring",
+    );
+  }
+
+  /** POST …/authoring-plans/validate → 200 `{ valid, plan, findings }`. */
+  validateAuthoringPlan(input: ValidateAuthoringPlanInput): Promise<ApiResponse<unknown>> {
+    return this.sendJson(
+      "POST",
+      "/api/mcp/authoring-plans/validate",
+      { ...authoringPlanBody(input), ...definedOnly({ planDigest: input.planDigest }) },
+      "authoring",
+    );
+  }
+
+  /** POST …/authoring-plans/apply → 201 (first success) or 200 (`replayed: true`). */
+  applyAuthoringPlan(
+    input: ApplyAuthoringPlanInput,
+    options: WriteOptions = {},
+  ): Promise<ApiResponse<unknown>> {
+    return this.sendJson(
+      "POST",
+      "/api/mcp/authoring-plans/apply",
+      {
+        ...authoringPlanBody(input),
+        planDigest: input.planDigest,
+        idempotencyKey: input.idempotencyKey,
+      },
+      "authoring",
+      options,
+    );
+  }
+
+  // ────────────────────────────────────────────────────────────────────
   // Internals
   // ────────────────────────────────────────────────────────────────────
 
@@ -1158,15 +1282,15 @@ export class KstonebaseClient {
    * One HTTP attempt, never retried. A request that fails in flight on a
    * Board call becomes INTERNAL_ERROR with the Board remediation (re-read
    * first; retry a create or note only with the same idempotencyKey; import
-   * report reads: retry the read once). Other tools keep their existing
-   * behaviour (the error propagates as is).
+   * report reads: retry the read once). Other tools, the authoring ones
+   * included, keep their existing behaviour (the error propagates as is).
    */
   private async fetchOnce(
     url: string,
     init: RequestInit,
     mode: ErrorMappingMode,
   ): Promise<Response> {
-    if (mode === "default") return this.fetcher(url, init);
+    if (mode === "default" || mode === "authoring") return this.fetcher(url, init);
     try {
       return await this.fetcher(url, init);
     } catch (err) {
@@ -1252,6 +1376,51 @@ function queryString(
   }
   const qs = sp.toString();
   return qs ? `?${qs}` : "";
+}
+
+/**
+ * The shared part of a plan request, in contract order, with exactly the
+ * contract fields: absent optional fields are omitted, never null, and each
+ * operation carries only the fields of its action.
+ */
+function authoringPlanBody(input: AuthoringPlanInput): Record<string, unknown> {
+  return definedOnly({
+    container: { type: input.container.type, id: input.container.id },
+    authoringRevision: input.authoringRevision,
+    subjects: input.subjects.map((s) => ({ key: s.key, title: s.title, folder: s.folder })),
+    operations: input.operations.map(authoringOperationBody),
+    indexContent: input.indexContent?.map((e) => ({ path: e.path, content: e.content })),
+  });
+}
+
+function authoringOperationBody(op: AuthoringOperation): Record<string, unknown> {
+  switch (op.action) {
+    case "create":
+      return definedOnly({
+        action: op.action,
+        subject: op.subject,
+        path: op.path,
+        title: op.title,
+        content: op.content,
+        tags: op.tags,
+      });
+    case "update":
+      return definedOnly({
+        action: op.action,
+        subject: op.subject,
+        specificationId: op.specificationId,
+        expectedVersion: op.expectedVersion,
+        content: op.content,
+        changeNote: op.changeNote,
+      });
+    case "reuse":
+      return {
+        action: op.action,
+        subject: op.subject,
+        specificationId: op.specificationId,
+        expectedVersion: op.expectedVersion,
+      };
+  }
 }
 
 /** Copy only the keys whose value is not undefined; nulls are kept. */
