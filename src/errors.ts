@@ -116,8 +116,9 @@ export type McpStructuredCode =
   // Specification authoring (MCP › specification-authoring/protocol.md
   // "Frozen client contract (v1)" T5; API › specification-authoring/
   // contracts.md §N). The API sends them in `details.code` on every tool.
-  // PAYLOAD_TOO_LARGE is any 413 answer; AUTHORING_UNSUPPORTED is raised
-  // here for a server without the authoring routes.
+  // PAYLOAD_TOO_LARGE is a 413 answer in the default and authoring modes;
+  // AUTHORING_UNSUPPORTED is raised here for a server without the
+  // authoring routes.
   | "BODY_HISTORY_VIOLATION"
   | "REVIEW_COVERAGE_INCOMPLETE"
   | "CONTENT_TOO_LARGE"
@@ -467,7 +468,7 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
   INVALID_PLAN_REQUEST:
     "The plan request has the wrong shape (details.field, details.rule): correct that field and send the request again.",
   PAYLOAD_TOO_LARGE:
-    "The request is too large: split the plan into smaller plans (at most 4 MiB).",
+    "The request is too large: split the plan into smaller plans (at most 4 MiB) or the content into smaller, focused specifications.",
   CONTAINER_ARCHIVED:
     "The Product or Workspace is archived: restore it before changing its specifications.",
   INVALID_TARGET:
@@ -811,8 +812,9 @@ export function mapApiError(
       );
     }
   }
-  // A 413 is PAYLOAD_TOO_LARGE whoever answered it (the API or the
-  // Website's request bound), T5.
+  // In the default and authoring modes a 413 is PAYLOAD_TOO_LARGE whoever
+  // answered it (the API or the Website's request bound), T5; the Board and
+  // engineering modes above keep their own mapping.
   const { code, source } =
     status === 413
       ? { code: "PAYLOAD_TOO_LARGE" as const, source: detailCode ?? apiCode }
@@ -915,10 +917,12 @@ function pickDetails(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-// Authoring detail bounds (T5).
+// Authoring detail bounds (T5), the same rules as the Kstonebase-hosted
+// registry's authoringErrorDetails.
 const MAX_DETAIL_STRING = 2_000;
 const MAX_DETAIL_FINDINGS = 50;
 const MAX_DETAIL_DEPENDENTS = 5;
+const MAX_DETAIL_ARRAY = 50;
 const FINDING_KEYS = [
   "ruleId",
   "severity",
@@ -926,87 +930,94 @@ const FINDING_KEYS = [
   "operation",
   "path",
   "subject",
-  "location",
   "excerpt",
   "dimension",
   "remediation",
 ] as const;
 
+// The existing actionable keys the shared codes keep unchanged; the keys
+// they share with AUTHORING_DETAIL_KEYS follow the authoring rules.
+const EXISTING_ONLY_DETAIL_KEYS = ACTIONABLE_DETAIL_KEYS.filter(
+  (key) => !(AUTHORING_DETAIL_KEYS as readonly string[]).includes(key),
+);
+
+type DetailPrimitive = string | number | boolean;
+
 /**
  * The authoring allowlist (T5), sanitized: `findings` keep at most 50
- * objects with only their listed keys (`location` only `line` and
- * `heading`), `dependents` at most 5 `{id, path}`, and every string is
- * clipped to 2,000 characters. With `withExisting`, the existing actionable
- * keys of the shared codes are kept as before.
+ * objects with only their listed keys as primitives (`location` as
+ * `{line, heading}`: a finite number and a string), `dependents` at most 5
+ * `{id, path}` strings (empty ones dropped), every other value only as a
+ * primitive or an array of at most 50 primitives, and every string clipped
+ * to 2,000 code points. With `withExisting`, the existing actionable keys
+ * of the shared codes that are not authoring keys are kept as before.
  */
 function pickAuthoringDetails(
   details: unknown,
   withExisting: boolean,
 ): McpFailureDetails | undefined {
-  if (!details || typeof details !== "object" || Array.isArray(details)) {
-    return undefined;
-  }
-  const source = details as Record<string, unknown>;
-  const out: McpFailureDetails = withExisting ? { ...pickDetails(details, ACTIONABLE_DETAIL_KEYS) } : {};
+  if (!isPlainRecord(details)) return undefined;
+  const out: McpFailureDetails = withExisting
+    ? { ...pickDetails(details, EXISTING_ONLY_DETAIL_KEYS) }
+    : {};
   for (const key of AUTHORING_DETAIL_KEYS) {
-    if (!Object.hasOwn(source, key) || source[key] === undefined) continue;
-    const value = source[key];
+    const value = details[key];
     if (key === "findings") {
-      if (Array.isArray(value)) out.findings = sanitizeFindings(value);
-    } else if (key === "dependents") {
-      if (Array.isArray(value)) out.dependents = sanitizeDependents(value);
-    } else {
-      out[key] = clipStrings(value, 0);
+      if (Array.isArray(value)) {
+        out.findings = value.filter(isPlainRecord).slice(0, MAX_DETAIL_FINDINGS).map(sanitizeFinding);
+      }
+      continue;
+    }
+    if (key === "dependents") {
+      if (Array.isArray(value)) {
+        out.dependents = value
+          .filter(isPlainRecord)
+          .slice(0, MAX_DETAIL_DEPENDENTS)
+          .map(sanitizeDependent)
+          .filter((dependent): dependent is Record<string, unknown> => dependent !== undefined);
+      }
+      continue;
+    }
+    const single = detailPrimitive(value);
+    if (single !== undefined) {
+      out[key] = single;
+    } else if (Array.isArray(value) && value.every((item) => detailPrimitive(item) !== undefined)) {
+      out[key] = value.slice(0, MAX_DETAIL_ARRAY).map((item) => detailPrimitive(item) as DetailPrimitive);
     }
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function sanitizeFindings(findings: unknown[]): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = [];
-  for (const entry of findings) {
-    if (out.length >= MAX_DETAIL_FINDINGS) break;
-    if (!isPlainRecord(entry)) continue;
-    const finding: Record<string, unknown> = {};
-    for (const key of FINDING_KEYS) {
-      if (!Object.hasOwn(entry, key) || entry[key] === undefined) continue;
-      const value = entry[key];
-      if (key === "location") {
-        if (!isPlainRecord(value)) continue;
-        const location: Record<string, unknown> = {};
-        if (value.line !== undefined) location.line = clipStrings(value.line, 2);
-        if (value.heading !== undefined) location.heading = clipStrings(value.heading, 2);
-        finding.location = location;
-      } else {
-        finding[key] = clipStrings(value, 2);
-      }
+function sanitizeFinding(entry: Record<string, unknown>): Record<string, unknown> {
+  const finding: Record<string, unknown> = {};
+  for (const key of FINDING_KEYS) {
+    const value = detailPrimitive(entry[key]);
+    if (value !== undefined) finding[key] = value;
+    // location keeps its place after subject, as the API orders it.
+    if (key === "subject" && isPlainRecord(entry.location)) {
+      const location: Record<string, unknown> = {};
+      const { line, heading } = entry.location;
+      if (typeof line === "number" && Number.isFinite(line)) location.line = line;
+      if (typeof heading === "string") location.heading = clipString(heading);
+      finding.location = location;
     }
-    out.push(finding);
   }
-  return out;
+  return finding;
 }
 
-function sanitizeDependents(dependents: unknown[]): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = [];
-  for (const entry of dependents) {
-    if (out.length >= MAX_DETAIL_DEPENDENTS) break;
-    if (!isPlainRecord(entry)) continue;
-    const dependent: Record<string, unknown> = {};
-    if (entry.id !== undefined) dependent.id = clipStrings(entry.id, 2);
-    if (entry.path !== undefined) dependent.path = clipStrings(entry.path, 2);
-    out.push(dependent);
-  }
-  return out;
+function sanitizeDependent(entry: Record<string, unknown>): Record<string, unknown> | undefined {
+  const dependent: Record<string, unknown> = {};
+  if (typeof entry.id === "string") dependent.id = clipString(entry.id);
+  if (typeof entry.path === "string") dependent.path = clipString(entry.path);
+  return Object.keys(dependent).length > 0 ? dependent : undefined;
 }
 
-/** Clip every string (in nested arrays and objects too) to 2,000 characters. */
-function clipStrings(value: unknown, depth: number): unknown {
+/** A string (clipped), a boolean or a finite number; anything else is dropped. */
+function detailPrimitive(value: unknown): DetailPrimitive | undefined {
   if (typeof value === "string") return clipString(value);
-  if (depth >= 4 || value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map((item) => clipStrings(item, depth + 1));
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) out[key] = clipStrings(item, depth + 1);
-  return out;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return undefined;
 }
 
 function clipString(text: string): string {

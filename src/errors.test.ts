@@ -650,7 +650,8 @@ const AUTHORING_REMEDIATIONS: Record<string, string> = {
     "Authoring plans are not enabled on this server: create or update one specification at a time with the single-specification tools.",
   INVALID_PLAN_REQUEST:
     "The plan request has the wrong shape (details.field, details.rule): correct that field and send the request again.",
-  PAYLOAD_TOO_LARGE: "The request is too large: split the plan into smaller plans (at most 4 MiB).",
+  PAYLOAD_TOO_LARGE:
+    "The request is too large: split the plan into smaller plans (at most 4 MiB) or the content into smaller, focused specifications.",
   CONTAINER_ARCHIVED: "The Product or Workspace is archived: restore it before changing its specifications.",
   INVALID_TARGET: "Pass exactly one target: a workspaceId, productId or specificationId.",
   AUTHORING_UNSUPPORTED:
@@ -724,6 +725,10 @@ describe("mapApiError — specification authoring codes (T5)", () => {
     const proxy = mapApiError(413, { error: { message: "API returned a non-JSON payload." } }, "authoring");
     expect(proxy.code).toBe("PAYLOAD_TOO_LARGE");
     expect(mapApiError(413, null).code).toBe("PAYLOAD_TOO_LARGE");
+    // Only the default and authoring modes: Board and engineering tools keep
+    // their own mapping of a code-less 413.
+    expect(mapApiError(413, null, "board").code).toBe("INTERNAL_ERROR");
+    expect(mapApiError(413, null, "engineering").code).not.toBe("PAYLOAD_TOO_LARGE");
   });
 
   it("authoring mode: 404, 405 or 501 without the API error envelope is AUTHORING_UNSUPPORTED", () => {
@@ -815,6 +820,70 @@ describe("mapApiError — specification authoring codes (T5)", () => {
     const out = err.details as Record<string, any>;
     expect(out.findings).toEqual([{ message: "😀".repeat(2_000) }]);
     expect(out.dependents).toEqual([{ id: "s_1", path: "😀".repeat(2_000) }]);
+  });
+
+  it("caps every array of primitives at 50 elements (a 100,000-element supported list)", () => {
+    const err = mapApiError(
+      400,
+      envelope("BAD_REQUEST", "New Products always use the flexible document model.", {
+        code: "PRODUCT_TYPE_UNSUPPORTED",
+        requested: "web_application",
+        supported: Array.from({ length: 100_000 }, (_, i) => `type_${i}`),
+      }),
+    );
+    expect(err.code).toBe("PRODUCT_TYPE_UNSUPPORTED");
+    const supported = (err.details as Record<string, unknown>).supported as string[];
+    expect(supported).toHaveLength(50);
+    expect(supported[49]).toBe("type_49");
+  });
+
+  it("keeps only primitives or arrays of primitives: nested objects and mixed arrays are dropped", () => {
+    let nested: Record<string, unknown> = { leaf: "x" };
+    for (let i = 0; i < 1_000; i += 1) nested = { next: nested };
+    const err = mapApiError(
+      409,
+      envelope("CONFLICT", "Stale.", {
+        code: "AUTHORING_PLAN_STALE",
+        hint: nested,
+        digest: [`ap1_${"x".repeat(43)}`, { not: "primitive" }],
+        reason: null,
+        total: Number.POSITIVE_INFINITY,
+        currentRevision: "ar1_AuthoringRevision00002",
+        truncated: false,
+        supported: [],
+      }),
+    );
+    expect(err.details).toEqual({ currentRevision: "ar1_AuthoringRevision00002", truncated: false, supported: [] });
+  });
+
+  it("finding fields keep only primitives; location keeps a finite line and a string heading; empty dependents are dropped", () => {
+    const err = mapApiError(
+      422,
+      envelope("VALIDATION_ERROR", "Invalid.", {
+        code: "AUTHORING_PLAN_INVALID",
+        findings: [
+          {
+            ruleId: "DATED_CHANGE_LOG",
+            severity: { level: "error" },
+            message: ["a", "b"],
+            operation: 2,
+            path: null,
+            location: { line: "3", heading: 7 },
+            excerpt: "2026-01-01",
+            remediation: { text: "nested" },
+          },
+          { ruleId: "X", location: { line: Number.NaN, heading: "## A" } },
+        ],
+        dependents: [{ title: "no id or path" }, { id: 7, path: "a.md" }, { id: "s_1" }],
+      }),
+    );
+    expect(err.details).toEqual({
+      findings: [
+        { ruleId: "DATED_CHANGE_LOG", operation: 2, location: {}, excerpt: "2026-01-01" },
+        { ruleId: "X", location: { heading: "## A" } },
+      ],
+      dependents: [{ path: "a.md" }, { id: "s_1" }],
+    });
   });
 
   it("the shared codes keep their existing details and gain the authoring ones", () => {
