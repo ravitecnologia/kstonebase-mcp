@@ -960,7 +960,9 @@ describe("authoring notice — decorated tools", () => {
 
   it("create_free_specification: the created specification's context, else the Product's", async () => {
     const replies: Reply[] = [
-      { status: 201, json: { id: "s_new", path: "billing/invoices.md", indexEffects: [{ action: "create_index", path: "billing/index.md" }] } },
+      // The API's real shape: {spec: {...}} (routes/mcp knowledge_layer).
+      { status: 201, json: { spec: { id: "s_new", path: "billing/invoices.md", indexEffects: [{ action: "created", path: "billing/index.md" }] } } },
+      { status: 201, json: { id: "s_top" } },
       { status: 201, json: { created: true } },
     ];
     const { fetcher, contextCalls } = stubApi({ reply: () => replies.shift()! });
@@ -970,9 +972,11 @@ describe("authoring notice — decorated tools", () => {
     expect(created.content[1].text).toBe(resolvedNotice("specification:s_new"));
     expect(created.content[2].text).toBe(localNotice("product:p_1"));
     expect(created.meta?.["kstonebase.com/authoring"].target).toBe("specification:s_new");
+    const topLevel = await call(mcp, "create_free_specification", { title: "Top" });
+    expect(topLevel.content[1].text).toBe(resolvedNotice("specification:s_top"));
     const noId = await call(mcp, "create_free_specification", { title: "Other" });
     expect(noId.content[1].text).toBe(resolvedNotice("product:p_1"));
-    expect(contextCalls().map((r) => r.query.get("target"))).toEqual(["specification:s_new", "product:p_1"]);
+    expect(contextCalls().map((r) => r.query.get("target"))).toEqual(["specification:s_new", "specification:s_top", "product:p_1"]);
     await close();
   });
 

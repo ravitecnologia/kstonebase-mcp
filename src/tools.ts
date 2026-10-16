@@ -1734,8 +1734,10 @@ export function registerWriteTools(
             writeOptions(args),
           );
           // The created specification's context (its new ancestor indexes
-          // included); the Product's when the result carries no id.
-          const createdId = (res.body as { id?: unknown } | null)?.id;
+          // included); the Product's when the result carries no id. The API
+          // answers {spec: {id, ...}}; a top-level id is accepted too.
+          const created = res.body as { spec?: { id?: unknown }; id?: unknown } | null;
+          const createdId = created?.spec?.id ?? created?.id;
           call.authoring(
             typeof createdId === "string" && createdId.length > 0
               ? { type: "specification", id: createdId }
