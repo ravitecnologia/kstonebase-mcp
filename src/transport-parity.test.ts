@@ -326,27 +326,18 @@ beforeAll(async () => {
     req.on("end", () => {
       const method = req.method ?? "GET";
       const path = req.url ?? "/";
-      const record = () => {
-        seen.push({
-          method,
-          path,
-          authorization: req.headers.authorization,
-          cookie: req.headers.cookie,
-          contentType: req.headers["content-type"],
-          policyRevision: req.headers["x-kstonebase-policy-revision"] as string | undefined,
-          body: raw.length > 0 ? JSON.parse(raw) : undefined,
-        });
-        const reply = route(method, path);
-        res.writeHead(reply.status, { "content-type": reply.raw ? "text/plain" : "application/json" });
-        res.end(reply.raw ?? JSON.stringify(reply.json));
-      };
-      // A decorated call issues its authoring-context read, then its policy
-      // read, in parallel (PBI 276); over separate sockets they may arrive
-      // swapped. Recording a policy read a moment later keeps the recorded
-      // order equal to the issue order (the client never sends a later
-      // call's request before this answer).
-      if (path.startsWith("/api/mcp/agent-policy?")) setTimeout(record, 10);
-      else record();
+      seen.push({
+        method,
+        path,
+        authorization: req.headers.authorization,
+        cookie: req.headers.cookie,
+        contentType: req.headers["content-type"],
+        policyRevision: req.headers["x-kstonebase-policy-revision"] as string | undefined,
+        body: raw.length > 0 ? JSON.parse(raw) : undefined,
+      });
+      const reply = route(method, path);
+      res.writeHead(reply.status, { "content-type": reply.raw ? "text/plain" : "application/json" });
+      res.end(reply.raw ?? JSON.stringify(reply.json));
     });
   });
   await new Promise<void>((resolve) => stubApi.listen(0, "127.0.0.1", resolve));
@@ -422,6 +413,30 @@ async function runSession(client: Client, calls: Script = BASE_SCRIPT): Promise<
     });
   }
   return { instructions: client.getInstructions(), tools, results, requests: [...seen] };
+}
+
+/**
+ * A decorated call issues its authoring-context read, then its policy read,
+ * and runs them in parallel (PBI 276), so over real sockets the stub may see
+ * the two arrive in either order. `pairs` lists the index in `expected` of
+ * each such concurrent pair; there, and only there, a recorded pair that
+ * arrived swapped is put back in issue order, so the two are compared as a
+ * set and every other request keeps its strict order. The issue order
+ * itself is pinned by the in-process tests (authoring-tools.test.ts).
+ */
+function concurrentNoticeReadsInIssueOrder(
+  requests: SeenRequest[],
+  expected: ReadonlyArray<{ path: string }>,
+  pairs: readonly number[],
+): SeenRequest[] {
+  const out = [...requests];
+  for (const at of pairs) {
+    const [first, second] = [out[at], out[at + 1]];
+    if (first?.path === expected[at + 1].path && second?.path === expected[at].path) {
+      [out[at], out[at + 1]] = [second, first];
+    }
+  }
+  return out;
 }
 
 const BASE_SCRIPT: Script = [
@@ -578,6 +593,19 @@ async function stdioSession(script?: Script): Promise<SessionRecord> {
     await client.close();
   }
 }
+
+describe("concurrent notice reads", () => {
+  it("are compared as a set at the marked pairs only; every other request keeps its strict order", () => {
+    const req = (path: string) => ({ method: "GET", path, authorization: undefined, cookie: undefined, contentType: undefined, body: undefined });
+    const expected = [req("/a"), req("/api/mcp/authoring-context?t=1"), req("/api/mcp/agent-policy?t=1"), req("/api/mcp/agent-policy?t=2"), req("/api/mcp/authoring-context?t=3")];
+    const swapped = [expected[0], expected[2], expected[1], expected[3], expected[4]];
+    expect(concurrentNoticeReadsInIssueOrder(swapped, expected, [1])).toEqual(expected);
+    expect(concurrentNoticeReadsInIssueOrder(expected, expected, [1])).toEqual(expected);
+    // Outside a marked pair a swap is still a difference.
+    const unmarked = [expected[0], expected[1], expected[2], expected[4], expected[3]];
+    expect(concurrentNoticeReadsInIssueOrder(unmarked, expected, [1])).not.toEqual(expected);
+  });
+});
 
 describe("stdio and HTTP transports", () => {
   it(
@@ -920,8 +948,6 @@ describe("stdio and HTTP transports", () => {
       expect(stdio.instructions).toBe(memory.instructions);
       expect(http.results).toEqual(memory.results);
       expect(stdio.results).toEqual(memory.results);
-      expect(http.requests).toEqual(memory.requests);
-      expect(stdio.requests).toEqual(memory.requests);
 
       const productNotice = SPEC_NOTICE.replaceAll("specification:s_1", "product:p_1");
       const contents = memory.results.map((r) => (r as { content: Array<{ text: string }> }).content);
@@ -980,8 +1006,10 @@ describe("stdio and HTTP transports", () => {
         body,
       });
       const policy = (target: string) => get(`/api/mcp/agent-policy?target=${encodeURIComponent(target)}`);
-      expect(memory.requests).toEqual([
-        get(`/api/mcp/authoring-context?target=${encodeURIComponent("product:p_1")}`),
+      const context = (target: string) => get(`/api/mcp/authoring-context?target=${encodeURIComponent(target)}`);
+      const expected = [
+        // read_authoring_context: the context read is the call itself.
+        context("product:p_1"),
         policy("product:p_1"),
         post("/api/mcp/authoring-plans/prepare", PLAN_REQUEST),
         policy("product:p_1"),
@@ -994,11 +1022,21 @@ describe("stdio and HTTP transports", () => {
         ),
         policy("product:p_1"),
         get("/api/mcp/specifications/s_1"),
-        get(`/api/mcp/authoring-context?target=${encodeURIComponent("specification:s_1")}`),
+        // read_specification's two notice reads, issued in this order and
+        // run in parallel.
+        context("specification:s_1"),
         policy("specification:s_1"),
-        get(`/api/mcp/authoring-context?target=${encodeURIComponent("product:p_old")}`),
+        context("product:p_old"),
         post("/api/mcp/products/p_1/specifications", { title: "Invoices", path: "billing/invoices.md" }),
-      ]);
+      ];
+      const pairs = [9];
+      expect(expected[pairs[0]].path).toBe(context("specification:s_1").path);
+      expect(expected[pairs[0] + 1].path).toBe(policy("specification:s_1").path);
+      const inIssueOrder = (requests: SeenRequest[]) =>
+        concurrentNoticeReadsInIssueOrder(requests, expected, pairs);
+      expect(inIssueOrder(memory.requests)).toEqual(expected);
+      expect(inIssueOrder(http.requests)).toEqual(expected);
+      expect(inIssueOrder(stdio.requests)).toEqual(expected);
     },
     60_000,
   );
