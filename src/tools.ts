@@ -125,7 +125,7 @@ const BOARD_TOOL_TEXT = {
   list_board_items: {
     title: "List Board work items",
     description: boardDescription(
-      "List Epics, Features and PBIs of a Software Engineering Workspace Board, ordered by priority then number, with filters and cursor pagination. `total` and `counts` describe the whole filtered set, not just this page; follow `nextCursor` to read everything.",
+      "List Epics, Features and PBIs of a Software Engineering Workspace Board with filters and cursor pagination. Non-archived Done-only lists are ordered by conclusion date descending (unknown dates last, then number descending); other lists use priority then number. Items carry a read-only `completedAt` (latest transition into Done, null when unknown or not Done). `total` and `counts` describe the whole filtered set, not just this page; follow `nextCursor` to read everything.",
     ),
   },
   read_board_item: {

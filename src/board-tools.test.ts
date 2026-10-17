@@ -45,7 +45,7 @@ const CONTRACT: Record<
   list_board_items: {
     title: "List Board work items",
     description:
-      "List Epics, Features and PBIs of a Software Engineering Workspace Board, ordered by priority then number, with filters and cursor pagination. `total` and `counts` describe the whole filtered set, not just this page; follow `nextCursor` to read everything. Completing or linking work items never changes or approves specifications.",
+      "List Epics, Features and PBIs of a Software Engineering Workspace Board with filters and cursor pagination. Non-archived Done-only lists are ordered by conclusion date descending (unknown dates last, then number descending); other lists use priority then number. Items carry a read-only `completedAt` (latest transition into Done, null when unknown or not Done). `total` and `counts` describe the whole filtered set, not just this page; follow `nextCursor` to read everything. Completing or linking work items never changes or approves specifications.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   read_board_item: {
@@ -307,9 +307,13 @@ const ITEM = {
 };
 
 const ITEM_PAGE = {
-  items: [{ ...ITEM, description: undefined }],
-  total: 1,
-  counts: { to_do: 0, doing: 1, done: 0 },
+  items: [
+    { ...ITEM, description: undefined },
+    // A Done card carries its server-owned conclusion date (API §9.5).
+    { ...ITEM, id: "bi_4", displayNumber: 4, state: "done", completedAt: "2026-10-17T12:00:00.123Z", description: undefined },
+  ],
+  total: 2,
+  counts: { to_do: 0, doing: 1, done: 1 },
   limit: 50,
   nextCursor: "c_2",
 };
@@ -918,7 +922,14 @@ describe("Board tools — forwarding", () => {
       state: "done",
       parentId: "bi_9",
     });
-    await ok(mcp, "update_board_item", { itemId: "bi_3", expectedVersion: 7, version: 99, approvedVersion: 2, status: "REVIEWED" });
+    await ok(mcp, "update_board_item", {
+      itemId: "bi_3",
+      expectedVersion: 7,
+      version: 99,
+      approvedVersion: 2,
+      status: "REVIEWED",
+      completedAt: "2026-01-01T00:00:00Z",
+    });
     expect(sent.map((r) => r.method)).toEqual(["PATCH", "PATCH", "PATCH", "PATCH"]);
     expect(sent[0].url).toBe(`${API_URL}/api/mcp/workspaces/ws_1/board/items/bi_3`);
     expect(sent[0].body).toEqual({ expectedVersion: 4, state: "doing" });
@@ -936,7 +947,7 @@ describe("Board tools — forwarding", () => {
       state: "done",
       parentId: "bi_9",
     });
-    // No specification lifecycle field can be smuggled through.
+    // No specification lifecycle field or server-owned completion date can be smuggled through.
     expect(sent[3].body).toEqual({ expectedVersion: 7 });
     await close();
   });
