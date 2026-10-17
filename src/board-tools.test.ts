@@ -45,7 +45,7 @@ const CONTRACT: Record<
   list_board_items: {
     title: "List Board work items",
     description:
-      "List Epics, Features and PBIs of a Software Engineering Workspace Board with filters and cursor pagination. Non-archived Done-only lists are ordered by conclusion date descending (unknown dates last, then number descending); other lists use priority then number. Items carry a read-only `completedAt` (latest transition into Done, null when unknown or not Done). `total` and `counts` describe the whole filtered set, not just this page; follow `nextCursor` to read everything. Completing or linking work items never changes or approves specifications.",
+      "List Epics, Features and PBIs of a Software Engineering Workspace Board with filters and cursor pagination. Non-archived Done-only lists are ordered by conclusion date descending (unknown dates last, then number descending); other lists use priority then number. `total` and `counts` describe the whole filtered set, not just this page; follow `nextCursor` to read everything. Completing or linking work items never changes or approves specifications.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   read_board_item: {
