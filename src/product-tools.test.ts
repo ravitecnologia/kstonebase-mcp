@@ -116,8 +116,9 @@ describe("create_product (PBI 271)", () => {
       expect(tool.inputSchema.required ?? []).not.toContain("specificationManagementType");
       expect(JSON.stringify(tool.inputSchema)).not.toContain("web_application");
       expect(tool.description).not.toMatch(/specificationManagementType|web_application|Web Application/);
+      // The authoring contract (T7) appends its root-index sentence.
       expect(tool.description).toBe(
-        "Create a new Product inside the bound Workspace. New Products use the flexible document model. Requires a Workspace-scope binding; product-allowlist credentials cannot create Products.",
+        "Create a new Product inside the bound Workspace. New Products use the flexible document model. Requires a Workspace-scope binding; product-allowlist credentials cannot create Products. The new Product uses the flexible document model and, when the authoring foundation is enabled, already contains its root index.md (returned in authoring.rootIndex).",
       );
     } finally {
       await close();
@@ -169,6 +170,8 @@ describe("create_product (PBI 271)", () => {
         "New Products always use the flexible document model. Omit specificationManagementType.",
       );
       expect(failure.details).toEqual({
+        requested: "web_application",
+        supported: ["free"],
         hint: "Omit specificationManagementType; new Products always use the flexible document model.",
       });
       const text = (res.content as Array<{ type: string; text: string }>)[0]!.text;

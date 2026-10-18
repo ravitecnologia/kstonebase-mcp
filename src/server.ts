@@ -5,6 +5,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
+import { AuthoringNotices } from "./authoring.js";
 import { KstonebaseClient } from "./client.js";
 import type { ResolvedConfig } from "./config.js";
 import { McpToolError } from "./errors.js";
@@ -15,7 +16,7 @@ import { registerReadTools, registerWriteTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 
 const SERVER_NAME = "@ravitecnologia/kstonebase-mcp";
-const SERVER_VERSION = "2.9.0";
+const SERVER_VERSION = "2.11.0";
 
 export interface BuildServerOptions {
   config: ResolvedConfig;
@@ -50,9 +51,11 @@ export function buildServer(options: BuildServerOptions): McpServer {
     new KstonebaseClient({ apiUrl: config.apiUrl, token: config.token });
 
   // One policy-notice builder per server: one credential, one text cache.
+  // The authoring notices (PBI 276) cache nothing.
   const policy = new PolicyNotices(client);
-  registerReadTools(server, { client, config, policy });
-  registerWriteTools(server, { client, config, policy });
+  const authoring = new AuthoringNotices(client);
+  registerReadTools(server, { client, config, policy, authoring });
+  registerWriteTools(server, { client, config, policy, authoring });
   // Engineering discovery, read and assessment tools (PBI 230), after the
   // existing tools so their order on every transport is unchanged.
   registerEngineeringTools(server, { client, config, policy });

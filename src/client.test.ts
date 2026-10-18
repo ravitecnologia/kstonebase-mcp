@@ -656,6 +656,8 @@ describe("KstonebaseClient — effective Workspace instructions", () => {
       const err = await client.getAgentPolicy([{ type: "workspace", id: "ws_1" }]).catch((e) => e);
       codes.push((err as McpToolError).code);
     }
-    expect(codes).toEqual(["NOT_FOUND", "VALIDATION_ERROR", "INTERNAL_ERROR"]);
+    // INVALID_TARGET is a detail-first tool code on every tool since the
+    // authoring contract (MCP › specification-authoring/protocol.md T5).
+    expect(codes).toEqual(["NOT_FOUND", "INVALID_TARGET", "INTERNAL_ERROR"]);
   });
 });
