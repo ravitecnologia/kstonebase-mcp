@@ -294,7 +294,11 @@ describe("mapApiError — PRODUCT_TYPE_UNSUPPORTED (PBI 271)", () => {
     expect(err.remediation).toBe(
       "New Products always use the flexible document model. Omit specificationManagementType.",
     );
+    // `requested` and `supported` travel since the authoring contract's
+    // detail allowlist (MCP › specification-authoring/protocol.md T5).
     expect(err.details).toEqual({
+      requested: "web_application",
+      supported: ["free"],
       hint: "Omit specificationManagementType; new Products always use the flexible document model.",
     });
   });
@@ -605,5 +609,297 @@ describe("mapApiError — board-import mode (MCP › mcp-board-tools.md §2.2)",
       expect(err.remediation).toContain("does not serve the Board import report tools");
       expect(err.remediation).toContain("list_board_items and read_board_item");
     }
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Specification authoring (MCP › specification-authoring/protocol.md "Frozen
+// client contract (v1)" T5, PBI 276). The remediation sentences are kept
+// here as independent literals so any drift in src/errors.ts fails.
+// ──────────────────────────────────────────────────────────────────────────
+
+const AUTHORING_REMEDIATIONS: Record<string, string> = {
+  BODY_HISTORY_VIOLATION:
+    "Keep the body as consolidated current state: remove the dated change log or history section from the content and record those decisions with append_context or a changeNote. The findings name each line.",
+  REVIEW_COVERAGE_INCOMPLETE:
+    'Cover each listed rubric dimension with substantive text, an explicit "Not applicable: <reason>" line or a native open question or assumption, then request review again.',
+  CONTENT_TOO_LARGE:
+    "Split the subject into smaller, focused specifications linked from its folder index (limit 512 KiB).",
+  INVALID_CONTENT: "Remove U+0000 (NUL) characters from the title, path, tags and content, then retry.",
+  INVALID_PATH:
+    'Use a relative path without "." or ".." segments, control characters or an index.md folder segment, with at most 16 segments of 200 bytes; details.rule and details.hint name the problem.',
+  PATH_CONFLICT:
+    "A specification already exists at this path (details.existingId): update or reuse it, or choose another path.",
+  PATH_CASE_CONFLICT:
+    "The path differs from an existing path only by letter case (details.existingPath): reuse the existing spelling.",
+  INDEX_CONFLICT:
+    "Another change created this folder index at the same time: retry, and the existing index will be reused.",
+  INDEX_REQUIRED:
+    "This folder index is required by the active specifications in details.dependents: archive, delete or move them first, or keep the index.",
+  SPEC_NOT_ARCHIVED: "Only an archived specification can be restored; this one is already active, so read it again.",
+  AUTHORING_REVISION_REQUIRED: "Pass the authoringRevision from read_authoring_context or from the prepared plan.",
+  AUTHORING_REVISION_STALE:
+    "The Product's authoring settings or ancestor indexes changed (details.currentRevision): call read_authoring_context again, re-read the indexes and prepare a new plan.",
+  AUTHORING_PLAN_STALE:
+    "Something the plan depends on changed and nothing was applied: re-read the affected specifications, prepare and validate the plan again, then apply it with a new idempotencyKey.",
+  AUTHORING_PLAN_INVALID:
+    "The plan has blocking findings and nothing was applied: fix the operations named in details.findings, validate again, then apply.",
+  IDEMPOTENCY_KEY_CONFLICT:
+    "This idempotencyKey was already used for a different request: use a new key for a new plan, or resend the exact original request to read its outcome.",
+  AUTHORING_UNAVAILABLE:
+    "Authoring plans are not enabled on this server: create or update one specification at a time with the single-specification tools.",
+  INVALID_PLAN_REQUEST:
+    "The plan request has the wrong shape (details.field, details.rule): correct that field and send the request again.",
+  PAYLOAD_TOO_LARGE:
+    "The request is too large: split the plan into smaller plans (at most 4 MiB) or the content into smaller, focused specifications.",
+  CONTAINER_ARCHIVED: "The Product or Workspace is archived: restore it before changing its specifications.",
+  INVALID_TARGET: "Pass exactly one target: a workspaceId, productId or specificationId.",
+  AUTHORING_UNSUPPORTED:
+    "This Kstonebase server does not support authoring context or plans yet. Use the single-specification tools and tell the user the authoring rules could not be checked.",
+};
+
+describe("mapApiError — specification authoring codes (T5)", () => {
+  // [status, envelope code, details.code] as the API's /mcp routes send them.
+  const cases: Array<[number, string, string]> = [
+    [422, "VALIDATION_ERROR", "BODY_HISTORY_VIOLATION"],
+    [422, "VALIDATION_ERROR", "REVIEW_COVERAGE_INCOMPLETE"],
+    [422, "VALIDATION_ERROR", "CONTENT_TOO_LARGE"],
+    [422, "VALIDATION_ERROR", "INVALID_CONTENT"],
+    [422, "VALIDATION_ERROR", "INVALID_PATH"],
+    [409, "CONFLICT", "PATH_CONFLICT"],
+    [409, "CONFLICT", "PATH_CASE_CONFLICT"],
+    [409, "CONFLICT", "INDEX_CONFLICT"],
+    [409, "CONFLICT", "INDEX_REQUIRED"],
+    [409, "SPEC_NOT_ARCHIVED", "SPEC_NOT_ARCHIVED"],
+    [428, "PRECONDITION_REQUIRED", "AUTHORING_REVISION_REQUIRED"],
+    [409, "CONFLICT", "AUTHORING_REVISION_STALE"],
+    [409, "CONFLICT", "AUTHORING_PLAN_STALE"],
+    [422, "VALIDATION_ERROR", "AUTHORING_PLAN_INVALID"],
+    [409, "CONFLICT", "IDEMPOTENCY_KEY_CONFLICT"],
+    [404, "NOT_FOUND", "AUTHORING_UNAVAILABLE"],
+    [422, "VALIDATION_ERROR", "INVALID_PLAN_REQUEST"],
+    [409, "CONFLICT", "CONTAINER_ARCHIVED"],
+    [422, "VALIDATION_ERROR", "INVALID_TARGET"],
+  ];
+
+  for (const [status, envelopeCode, detailCode] of cases) {
+    it(`${status} ${envelopeCode} + ${detailCode} → ${detailCode} (default and authoring modes)`, () => {
+      for (const mode of ["default", "authoring"] as const) {
+        const err = mapApiError(status, envelope(envelopeCode, "Refused.", { code: detailCode, hint: "API hint." }), mode);
+        expect(err.code, mode).toBe(detailCode);
+        expect(err.message).toBe("Refused.");
+        expect(err.remediation).toBe(AUTHORING_REMEDIATIONS[detailCode]);
+        // The API's own hint travels unchanged next to the sentence.
+        expect(err.details).toEqual({ hint: "API hint." });
+      }
+    });
+  }
+
+  it("PATH_CONFLICT on a single-spec write is PATH_CONFLICT, no longer the 409's STALE_VERSION", () => {
+    const err = mapApiError(
+      409,
+      envelope("CONFLICT", "A specification already exists at that path.", {
+        code: "PATH_CONFLICT",
+        path: "billing/invoices.md",
+        existingId: "s_9",
+        hint: "Update the existing specification, or choose another path.",
+      }),
+    );
+    expect(err.code).toBe("PATH_CONFLICT");
+    expect(err.details).toEqual({
+      path: "billing/invoices.md",
+      existingId: "s_9",
+      hint: "Update the existing specification, or choose another path.",
+    });
+  });
+
+  it("413 is PAYLOAD_TOO_LARGE with or without an envelope; the API's `limit` is not an allowlisted detail", () => {
+    const api = mapApiError(
+      413,
+      envelope("PAYLOAD_TOO_LARGE", "The authoring plan request is larger than 4 MiB.", { code: "BODY_TOO_LARGE", limit: 4194304 }),
+      "authoring",
+    );
+    expect(api.code).toBe("PAYLOAD_TOO_LARGE");
+    expect(api.remediation).toBe(AUTHORING_REMEDIATIONS.PAYLOAD_TOO_LARGE);
+    expect(api.details).toBeUndefined();
+    const proxy = mapApiError(413, { error: { message: "API returned a non-JSON payload." } }, "authoring");
+    expect(proxy.code).toBe("PAYLOAD_TOO_LARGE");
+    expect(mapApiError(413, null).code).toBe("PAYLOAD_TOO_LARGE");
+    // Only the default and authoring modes: Board and engineering tools keep
+    // their own mapping of a code-less 413.
+    expect(mapApiError(413, null, "board").code).toBe("INTERNAL_ERROR");
+    expect(mapApiError(413, null, "engineering").code).not.toBe("PAYLOAD_TOO_LARGE");
+  });
+
+  it("authoring mode: 404, 405 or 501 without the API error envelope is AUTHORING_UNSUPPORTED", () => {
+    const bodies: Array<[number, ApiErrorBody | null]> = [
+      [404, { error: { message: "API returned a non-JSON payload." } }],
+      [404, null],
+      [404, { result: false, message: "Not Found" } as unknown as ApiErrorBody],
+      [405, null],
+      [501, { error: { message: "API returned a non-JSON payload." } }],
+    ];
+    for (const [status, body] of bodies) {
+      const err = mapApiError(status, body, "authoring");
+      expect(err.code, String(status)).toBe("AUTHORING_UNSUPPORTED");
+      expect(err.message).toBe("This Kstonebase server does not provide authoring context or plans.");
+      expect(err.remediation).toBe(AUTHORING_REMEDIATIONS.AUTHORING_UNSUPPORTED);
+      expect(err.details).toBeUndefined();
+    }
+    // With the envelope it is the API's own answer.
+    expect(mapApiError(404, envelope("NOT_FOUND", "Product not found."), "authoring").code).toBe("NOT_FOUND");
+    // Other modes keep their mapping.
+    expect(mapApiError(404, null).code).toBe("NOT_FOUND");
+    expect(mapApiError(501, null).code).toBe("INTERNAL_ERROR");
+  });
+
+  it("keeps only the allowlisted details, at most 50 findings with their listed keys and 5 dependents, strings clipped to 2,000", () => {
+    const finding = (i: number) => ({
+      ruleId: "DATED_CHANGE_LOG",
+      severity: "error",
+      message: `Line ${i} records history.`,
+      operation: 0,
+      path: "billing/invoices.md",
+      subject: "billing",
+      location: { line: i, heading: "## History", column: 3 },
+      excerpt: "2026-01-01: changed",
+      dimension: "history",
+      remediation: "Move it to append_context.",
+      secret: "dropped",
+    });
+    const details = {
+      code: "AUTHORING_PLAN_INVALID",
+      findings: Array.from({ length: 60 }, (_, i) => finding(i + 1)),
+      total: 60,
+      truncated: true,
+      truncatedFindings: true,
+      remediation: "r".repeat(2_500),
+      dependents: Array.from({ length: 8 }, (_, i) => ({ id: `s_${i}`, path: `a/${i}.md`, title: "dropped" })),
+      dependentCount: 8,
+      folder: "a",
+      digest: `ap1_${"x".repeat(43)}`,
+      currentRevision: "ar1_AuthoringRevision00002",
+      item: { id: "dropped" },
+      content: "never passed on",
+    };
+    const err = mapApiError(422, envelope("VALIDATION_ERROR", "The plan has blocking findings.", details), "authoring");
+    expect(err.code).toBe("AUTHORING_PLAN_INVALID");
+    const out = err.details as Record<string, any>;
+    expect(Object.keys(out).sort()).toEqual(
+      ["currentRevision", "dependentCount", "dependents", "digest", "findings", "folder", "remediation", "total", "truncated", "truncatedFindings"].sort(),
+    );
+    expect(out.findings).toHaveLength(50);
+    expect(out.findings[0]).toEqual({
+      ruleId: "DATED_CHANGE_LOG",
+      severity: "error",
+      message: "Line 1 records history.",
+      operation: 0,
+      path: "billing/invoices.md",
+      subject: "billing",
+      location: { line: 1, heading: "## History" },
+      excerpt: "2026-01-01: changed",
+      dimension: "history",
+      remediation: "Move it to append_context.",
+    });
+    expect(out.dependents).toEqual(Array.from({ length: 5 }, (_, i) => ({ id: `s_${i}`, path: `a/${i}.md` })));
+    expect(out.remediation).toBe("r".repeat(2_000));
+    expect(out.total).toBe(60);
+    expect(out.truncated).toBe(true);
+  });
+
+  it("clips long finding texts by code point and drops malformed findings and dependents", () => {
+    const long = "😀".repeat(2_100);
+    const err = mapApiError(
+      409,
+      envelope("CONFLICT", "Required.", {
+        code: "INDEX_REQUIRED",
+        findings: ["not an object", { message: long, location: "line 3" }],
+        dependents: [null, { id: "s_1", path: long }],
+      }),
+    );
+    const out = err.details as Record<string, any>;
+    expect(out.findings).toEqual([{ message: "😀".repeat(2_000) }]);
+    expect(out.dependents).toEqual([{ id: "s_1", path: "😀".repeat(2_000) }]);
+  });
+
+  it("caps every array of primitives at 50 elements (a 100,000-element supported list)", () => {
+    const err = mapApiError(
+      400,
+      envelope("BAD_REQUEST", "New Products always use the flexible document model.", {
+        code: "PRODUCT_TYPE_UNSUPPORTED",
+        requested: "web_application",
+        supported: Array.from({ length: 100_000 }, (_, i) => `type_${i}`),
+      }),
+    );
+    expect(err.code).toBe("PRODUCT_TYPE_UNSUPPORTED");
+    const supported = (err.details as Record<string, unknown>).supported as string[];
+    expect(supported).toHaveLength(50);
+    expect(supported[49]).toBe("type_49");
+  });
+
+  it("keeps only primitives or arrays of primitives: nested objects and mixed arrays are dropped", () => {
+    let nested: Record<string, unknown> = { leaf: "x" };
+    for (let i = 0; i < 1_000; i += 1) nested = { next: nested };
+    const err = mapApiError(
+      409,
+      envelope("CONFLICT", "Stale.", {
+        code: "AUTHORING_PLAN_STALE",
+        hint: nested,
+        digest: [`ap1_${"x".repeat(43)}`, { not: "primitive" }],
+        reason: null,
+        total: Number.POSITIVE_INFINITY,
+        currentRevision: "ar1_AuthoringRevision00002",
+        truncated: false,
+        supported: [],
+      }),
+    );
+    expect(err.details).toEqual({ currentRevision: "ar1_AuthoringRevision00002", truncated: false, supported: [] });
+  });
+
+  it("finding fields keep only primitives; location keeps a finite line and a string heading; empty dependents are dropped", () => {
+    const err = mapApiError(
+      422,
+      envelope("VALIDATION_ERROR", "Invalid.", {
+        code: "AUTHORING_PLAN_INVALID",
+        findings: [
+          {
+            ruleId: "DATED_CHANGE_LOG",
+            severity: { level: "error" },
+            message: ["a", "b"],
+            operation: 2,
+            path: null,
+            location: { line: "3", heading: 7 },
+            excerpt: "2026-01-01",
+            remediation: { text: "nested" },
+          },
+          { ruleId: "X", location: { line: Number.NaN, heading: "## A" } },
+        ],
+        dependents: [{ title: "no id or path" }, { id: 7, path: "a.md" }, { id: "s_1" }],
+      }),
+    );
+    expect(err.details).toEqual({
+      findings: [
+        { ruleId: "DATED_CHANGE_LOG", operation: 2, location: {}, excerpt: "2026-01-01" },
+        { ruleId: "X", location: { heading: "## A" } },
+      ],
+      dependents: [{ path: "a.md" }, { id: "s_1" }],
+    });
+  });
+
+  it("the shared codes keep their existing details and gain the authoring ones", () => {
+    const locked = mapApiError(
+      409,
+      envelope("SPEC_LOCKED", "Specification is not editable in its current status.", {
+        code: "SPEC_LOCKED",
+        status: "REVIEWED",
+        hint: "call start_new_version first",
+        fields: ["content"],
+      }),
+    );
+    expect(locked.code).toBe("SPEC_LOCKED");
+    expect(locked.details).toEqual({ status: "REVIEWED", hint: "call start_new_version first", fields: ["content"] });
+    // Other codes keep the existing allowlist only.
+    const stale = mapApiError(409, envelope("CONFLICT", "Stale.", { code: "STALE_VERSION", path: "x.md", hint: "re-read" }));
+    expect(stale.details).toEqual({ hint: "re-read" });
   });
 });

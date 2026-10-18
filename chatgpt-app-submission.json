@@ -308,6 +308,55 @@
         "destructive_justification": "Appends a new immutable change entry; the specification's own content is never modified and no existing entry is deleted or overwritten."
       }
     },
+    "read_authoring_context": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads the effective specification authoring context (rules, rubric, detail level and folder index references) of a Workspace, Product or specification; nothing is created.",
+        "open_world_justification": "Only reads private Kstonebase data and does not publish or send data to public third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, or otherwise change any record."
+      }
+    },
+    "prepare_authoring_plan": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only computes a reviewable plan, its digest and findings against the current specifications; nothing is written.",
+        "open_world_justification": "Only reads private Kstonebase data and does not publish or send data to public third-party systems.",
+        "destructive_justification": "Does not create, delete or overwrite any specification or index."
+      }
+    },
+    "validate_authoring_plan": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only re-checks a prepared plan against the current state and returns the fresh plan and findings; nothing is written.",
+        "open_world_justification": "Only reads private Kstonebase data and does not publish or send data to public third-party systems.",
+        "destructive_justification": "Does not create, delete or overwrite any specification or index."
+      }
+    },
+    "apply_authoring_plan": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Writes a validated plan: creates Draft specifications and folder indexes and replaces the content of the updated Drafts.",
+        "open_world_justification": "Only changes private Kstonebase specifications and does not publish to public internet endpoints.",
+        "destructive_justification": "Replaces the content of the Draft specifications the plan updates (each with a native change entry); the whole plan applies atomically, stale plans apply nothing, and a retry with the same idempotency key returns the original outcome."
+      }
+    },
     "read_board": {
       "annotations": {
         "readOnlyHint": true,

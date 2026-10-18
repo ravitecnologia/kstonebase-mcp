@@ -757,6 +757,7 @@ describe("open-question tools — discovery", () => {
       [
         "append_board_item_note",
         "append_context",
+        "apply_authoring_plan",
         "archive_board_item",
         "create_board_item",
         "create_free_specification",
@@ -778,6 +779,8 @@ describe("open-question tools — discovery", () => {
         "list_specification_versions",
         "list_specifications",
         "list_workspaces",
+        "prepare_authoring_plan",
+        "read_authoring_context",
         "read_board",
         "read_board_import",
         "read_board_item",
@@ -796,6 +799,7 @@ describe("open-question tools — discovery", () => {
         "update_open_question",
         "update_specification_content",
         "update_specification_section",
+        "validate_authoring_plan",
         // Engineering discovery, read and assessment tools (PBI 230).
         ...ENGINEERING_TOOL_NAMES,
       ].sort(),
