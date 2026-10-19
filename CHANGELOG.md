@@ -4,6 +4,10 @@ Notable changes to `@ravitecnologia/kstonebase-mcp`. Versions before 2.2.0 are d
 
 ## Unreleased
 
+### Changed
+
+- `update_open_question` explains what an answer is (Kstonebase MCP spec `features/mcp-open-question-management.md` §5 "Agent answer semantics", PBI 336): when an agent resolves a question with the user's response, the answer is the specification text that replaces the question, written as clear declarative prose from the question, the response and its section, keeping every condition, number, negation, exception and uncertainty and adding nothing the user did not decide; an ambiguous or incomplete response means asking the user instead. The description is byte-identical to the Kstonebase-hosted and Desktop session registry. Schema, results and errors are unchanged. README documents it. Package version 2.12.0.
+
 ### Added
 
 - Specification authoring tools (Kstonebase MCP spec `specification-authoring/protocol.md` "Frozen client contract (v1)", PBI 276; backed by the API's `GET /mcp/authoring-context` and `POST /mcp/authoring-plans/{prepare,validate,apply}` behind the Website's `/api/mcp/…` proxies), with the contract's titles, descriptions, annotations and input schemas on both transports: `read_authoring_context` (`workspaceId`, `productId` or `specificationId`, at most one; the binding's `productId`, then `workspaceId`, is the default; `VALIDATION_ERROR` with `details.reason` `multiple-targets` or `target-required`), `prepare_authoring_plan` and `validate_authoring_plan` (READ, right after `get_effective_instructions`) and `apply_authoring_plan` (`readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: true`, right after `create_free_specification`). Plan requests carry exactly `container`, `authoringRevision`, `subjects`, `operations` (create / update / reuse, discriminated by `action`), `indexContent`, `planDigest` and `idempotencyKey`, absent optional fields omitted; `apply_authoring_plan` sends `expectedPolicyRevision` only as the `X-Kstonebase-Policy-Revision` header. Results are the API bodies, unchanged, with the Workspace instructions notice of the target or the plan's container.

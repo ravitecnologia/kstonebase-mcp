@@ -16,7 +16,7 @@ import { registerReadTools, registerWriteTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 
 const SERVER_NAME = "@ravitecnologia/kstonebase-mcp";
-const SERVER_VERSION = "2.11.0";
+const SERVER_VERSION = "2.12.0";
 
 export interface BuildServerOptions {
   config: ResolvedConfig;
