@@ -324,6 +324,83 @@ export interface WriteOptions {
   policyRevision?: string;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Workspace Library DTOs (frozen Epic 340 contract §4; API ›
+// features/workspace-library.md §9). Results are passed through unchanged.
+// ──────────────────────────────────────────────────────────────────────────
+
+export interface ListLibraryQuery {
+  folderId?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface McpLibraryFile {
+  id: string;
+  workspaceId: string;
+  folderId: string | null;
+  folderPath: string;
+  name: string;
+  kind: "image" | "video" | "audio";
+  contentType: string;
+  size: number;
+  exposure: "common" | "secret";
+  createdAt: string;
+  updatedAt: string;
+  /** Display name or null; only on read_library_file. */
+  uploadedBy?: string | null;
+}
+
+export interface McpLibraryFolder {
+  id: string;
+  workspaceId: string;
+  parentId: string | null;
+  name: string;
+  path: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface McpLibraryListing {
+  workspaceId: string;
+  folder: McpLibraryFolder | null;
+  breadcrumbs: Array<{ id: string; name: string }>;
+  folders: McpLibraryFolder[];
+  files: McpLibraryFile[];
+  total: number;
+  nextCursor: string | null;
+}
+
+export interface McpLibraryLink {
+  url: string;
+  expiresAt: string;
+}
+
+export interface McpLibraryContent {
+  fileId: string;
+  name: string;
+  contentType: string;
+  size: number;
+  base64: string;
+}
+
+export interface McpLibraryAccessRequest {
+  requestId: string;
+  fileId: string;
+  status: "pending";
+  expiresAt: string;
+  approvalUrl: string;
+}
+
+export interface McpLibraryAccessStatus {
+  requestId: string;
+  fileId: string;
+  status: "pending" | "approved" | "rejected" | "expired" | "redeemed" | "revoked";
+  expiresAt: string;
+  /** The one-time redeem URL; only when approved and unexpired. */
+  url?: string;
+}
+
 export interface AgentPolicyQuery {
   /** Ask the resolver to hide enabled text (`instructions=omit`). */
   omitInstructions?: boolean;
@@ -835,6 +912,63 @@ export class KstonebaseClient {
   }
 
   // ────────────────────────────────────────────────────────────────────
+  // Workspace Library (MCP › features/mcp-library-tools.md, PBI 352; the
+  // API's `/mcp/…` Library routes of API › features/workspace-library.md §9,
+  // proxied by the Website under `/api/mcp/…`). Errors map in "library"
+  // mode. These methods only call Kstonebase routes: nothing here ever
+  // requests a link the API returns (a temporary link, a one-time
+  // `/library/redeem/` link or an approval URL), and nothing is retried.
+  // ────────────────────────────────────────────────────────────────────
+
+  /** GET …/workspaces/:workspaceId/library → `McpLibraryListing`. */
+  listLibrary(
+    workspaceId: string,
+    query: ListLibraryQuery = {},
+  ): Promise<ApiResponse<McpLibraryListing>> {
+    const qs = queryString({ folderId: query.folderId, cursor: query.cursor, limit: query.limit });
+    return this.getJson(
+      `/api/mcp/workspaces/${librarySegment("workspaceId", workspaceId)}/library${qs}`,
+      "library",
+    );
+  }
+
+  /** GET …/library/files/:fileId → `McpLibraryFile` (with `uploadedBy`). */
+  readLibraryFile(fileId: string): Promise<ApiResponse<McpLibraryFile>> {
+    return this.getJson(libraryFilePath(fileId), "library");
+  }
+
+  /** POST …/library/files/:fileId/link → `{ url, expiresAt }` (common files only). */
+  getLibraryFileLink(fileId: string): Promise<ApiResponse<McpLibraryLink>> {
+    return this.sendJson("POST", `${libraryFilePath(fileId)}/link`, undefined, "library");
+  }
+
+  /** GET …/library/files/:fileId/content → base64 bytes of a common image or audio file ≤ 10 MB. */
+  readLibraryFileContent(fileId: string): Promise<ApiResponse<McpLibraryContent>> {
+    return this.getJson(`${libraryFilePath(fileId)}/content`, "library");
+  }
+
+  /** POST …/library/files/:fileId/access-requests `{purpose}` → 201 `McpLibraryAccessRequest`. */
+  requestLibraryFileAccess(
+    fileId: string,
+    input: { purpose: string },
+  ): Promise<ApiResponse<McpLibraryAccessRequest>> {
+    return this.sendJson(
+      "POST",
+      `${libraryFilePath(fileId)}/access-requests`,
+      { purpose: input.purpose },
+      "library",
+    );
+  }
+
+  /** GET …/library/access-requests/:requestId → `McpLibraryAccessStatus` (requesting credential only). */
+  readLibraryFileAccess(requestId: string): Promise<ApiResponse<McpLibraryAccessStatus>> {
+    return this.getJson(
+      `/api/mcp/library/access-requests/${librarySegment("requestId", requestId)}`,
+      "library",
+    );
+  }
+
+  // ────────────────────────────────────────────────────────────────────
   // Engineering tools (MCP › mcp-engineering-tools.md, PBIs 230 and 239).
   // The shared catalog builds the API `/mcp/…` request; the Website proxies
   // it under `/api/mcp/…`. Reads (the read-only assessment POST included)
@@ -1291,7 +1425,7 @@ export class KstonebaseClient {
     init: RequestInit,
     mode: ErrorMappingMode,
   ): Promise<Response> {
-    if (mode === "default" || mode === "authoring") return this.fetcher(url, init);
+    if (mode === "default" || mode === "authoring" || mode === "library") return this.fetcher(url, init);
     try {
       return await this.fetcher(url, init);
     } catch (err) {
@@ -1338,6 +1472,22 @@ function pathSegment(name: string, id: string): string {
       "VALIDATION_ERROR",
       `${name} must be a non-empty id other than "." or "..".`,
       "Pass the id exactly as returned by list_specifications, list_open_questions or read_open_question.",
+    );
+  }
+  return encodeURIComponent(id);
+}
+
+function libraryFilePath(fileId: string): string {
+  return `/api/mcp/library/files/${librarySegment("fileId", fileId)}`;
+}
+
+/** pathSegment with a Library remediation. */
+function librarySegment(name: string, id: string): string {
+  if (id === "" || id === "." || id === "..") {
+    throw new McpToolError(
+      "VALIDATION_ERROR",
+      `${name} must be a non-empty id other than "." or "..".`,
+      "Pass the id exactly as returned by list_workspaces, list_library or request_library_file_access.",
     );
   }
   return encodeURIComponent(id);

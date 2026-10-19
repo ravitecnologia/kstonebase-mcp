@@ -12,6 +12,11 @@ import {
   ENGINEERING_ERROR_CODES,
   engineeringRemediation,
 } from "./engineering-catalog.js";
+import {
+  LIBRARY_ERROR_CODES,
+  LIBRARY_ERROR_TEXT,
+  type LibraryErrorCode,
+} from "./library-catalog.js";
 
 export type McpStructuredCode =
   | "AUTH_FAILED"
@@ -139,7 +144,10 @@ export type McpStructuredCode =
   | "PAYLOAD_TOO_LARGE"
   | "CONTAINER_ARCHIVED"
   | "INVALID_TARGET"
-  | "AUTHORING_UNSUPPORTED";
+  | "AUTHORING_UNSUPPORTED"
+  // Workspace Library (MCP › features/mcp-library-tools.md §3, PBI 352; API ›
+  // features/workspace-library.md §9). The API sends them in `details.code`.
+  | LibraryErrorCode;
 
 export interface ApiErrorBody {
   error?: {
@@ -247,7 +255,8 @@ export type ErrorMappingMode =
   | "board"
   | "board-import"
   | "engineering"
-  | "engineering-write";
+  | "engineering-write"
+  | "library";
 
 const isEngineeringMode = (mode: ErrorMappingMode): mode is "engineering" | "engineering-write" =>
   mode === "engineering" || mode === "engineering-write";
@@ -475,6 +484,10 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
     "Pass exactly one target: a workspaceId, productId or specificationId.",
   AUTHORING_UNSUPPORTED:
     "This Kstonebase server does not support authoring context or plans yet. Use the single-specification tools and tell the user the authoring rules could not be checked.",
+  LIBRARY_APPROVAL_REQUIRED: LIBRARY_ERROR_TEXT.LIBRARY_APPROVAL_REQUIRED.remediation,
+  LIBRARY_CONTENT_TOO_LARGE: LIBRARY_ERROR_TEXT.LIBRARY_CONTENT_TOO_LARGE.remediation,
+  LIBRARY_NOT_SECRET: LIBRARY_ERROR_TEXT.LIBRARY_NOT_SECRET.remediation,
+  LIBRARY_TOO_MANY_PENDING: LIBRARY_ERROR_TEXT.LIBRARY_TOO_MANY_PENDING.remediation,
 };
 
 // Board-specific wording for shared codes (MCP › mcp-board-tools.md §2.1,
@@ -778,6 +791,9 @@ export function mapApiError(
       details,
     );
   }
+  if (mode === "library") {
+    return mapLibraryError(status, apiCode, detailCode, apiMessage, rawDetails);
+  }
   if (mode === "board" || mode === "board-import") {
     const { code } = pickBoardCode(status, apiCode, detailCode);
     const details = pickDetails(rawDetails, BOARD_DETAIL_KEYS);
@@ -826,6 +842,58 @@ export function mapApiError(
     remediationFor(code, source, details),
     details,
   );
+}
+
+/** The `error.details` keys a Library tool passes on (validation only). */
+const LIBRARY_DETAIL_KEYS = ["field", "problem", "hint"] as const;
+
+/**
+ * "library" mode (MCP › features/mcp-library-tools.md §3): a Library
+ * `details.code` (or envelope code) is the tool code with the spec's message
+ * and remediation; any 404 is "not found or outside this credential's
+ * scope", whoever answered it (a Product-only credential, a request of
+ * another credential, a server without the Library); everything else keeps
+ * the shared mapping.
+ */
+function mapLibraryError(
+  status: number,
+  apiCode: string | undefined,
+  detailCode: string | undefined,
+  apiMessage: string,
+  rawDetails: unknown,
+): McpToolError {
+  const library = [detailCode, apiCode].find(
+    (c): c is LibraryErrorCode => c !== undefined && (LIBRARY_ERROR_CODES as readonly string[]).includes(c),
+  );
+  if (library) {
+    const text = LIBRARY_ERROR_TEXT[library];
+    return new McpToolError(library, text.message, text.remediation);
+  }
+  // A credential refusal in `details.code` wins over its FORBIDDEN envelope
+  // (as on the Board tools), so a read-only token asking for access hears
+  // TOKEN_SCOPE_INSUFFICIENT.
+  const credential = lookupCode(ENVELOPE_FIRST_CODES, detailCode);
+  if (credential && status !== 404) {
+    return new McpToolError(credential, apiMessage, REMEDIATIONS[credential]);
+  }
+  if (status === 404 || detailCode === "NOT_FOUND" || apiCode === "NOT_FOUND") {
+    return new McpToolError(
+      "NOT_FOUND",
+      LIBRARY_ERROR_TEXT.NOT_FOUND.message,
+      LIBRARY_ERROR_TEXT.NOT_FOUND.remediation,
+    );
+  }
+  if (detailCode === "VALIDATION_ERROR" || apiCode === "VALIDATION_ERROR" || status === 400 || status === 422) {
+    return new McpToolError(
+      "VALIDATION_ERROR",
+      apiMessage,
+      REMEDIATIONS.VALIDATION_ERROR,
+      pickDetails(rawDetails, LIBRARY_DETAIL_KEYS),
+    );
+  }
+  const { code, source } = pickStructuredCode(status, apiCode, detailCode);
+  const details = pickDetails(rawDetails, ACTIONABLE_DETAIL_KEYS);
+  return new McpToolError(code, apiMessage, remediationFor(code, source, details), details);
 }
 
 /** The details a default- or authoring-mode failure passes on for `code`. */
