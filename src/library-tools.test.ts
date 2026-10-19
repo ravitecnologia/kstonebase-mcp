@@ -473,6 +473,9 @@ describe("Library tools — discovery", () => {
       ["request_library_file_access", { fileId: "f_sec" }],
       ["request_library_file_access", { fileId: "f_sec", purpose: "" }],
       ["request_library_file_access", { fileId: "f_sec", purpose: "x".repeat(501) }],
+      ["request_library_file_access", { fileId: "f_sec", purpose: " \n\t " }],
+      // The API counts Unicode code points: 501 emoji are too many.
+      ["request_library_file_access", { fileId: "f_sec", purpose: "😀".repeat(501) }],
       ["read_library_file_access", {}],
     ];
     for (const [name, args] of cases) {
@@ -482,6 +485,13 @@ describe("Library tools — discovery", () => {
     }
     const ok500 = await once("request_library_file_access", { fileId: "f_sec", purpose: "x".repeat(500) });
     expect(ok500.isError).toBe(false);
+  });
+
+  it("counts the purpose in Unicode code points, as the API does (500 emoji are accepted)", async () => {
+    const purpose = "😀".repeat(500); // 1,000 UTF-16 code units
+    const out = await once("request_library_file_access", { fileId: "f_sec", purpose });
+    expect(out.isError, out.text).toBe(false);
+    expect(out.sent[0].body).toEqual({ purpose });
   });
 
   it.each([".", ".."])("refuses the path-collapsing id %j before any request", async (bad) => {
@@ -752,6 +762,34 @@ describe("Library tools — error mapping", () => {
       message: "purpose is required",
       details: { field: "purpose", problem: "too-long" },
     });
+  });
+
+  it("a 409 without a known Library code is CONFLICT with the API message, never STALE_VERSION", async () => {
+    const out = await once("request_library_file_access", MINIMAL_ARGS.request_library_file_access, () =>
+      apiError(409, "CONFLICT", "The Workspace is archived.", { code: "LIBRARY_WORKSPACE_ARCHIVED" }),
+    );
+    expect(out.isError).toBe(true);
+    expect(out.data).toMatchObject({
+      code: "CONFLICT",
+      message: "The Workspace is archived.",
+      details: { reason: "LIBRARY_WORKSPACE_ARCHIVED" },
+    });
+    expect(out.data.remediation).toContain("do not retry it unchanged");
+    expect(out.text).not.toMatch(/STALE_VERSION|re-read/i);
+  });
+
+  it("an unavailable Library storage says to try again later", async () => {
+    for (const name of ["get_library_file_link", "read_library_file_content"]) {
+      const out = await once(name, MINIMAL_ARGS[name], (req) =>
+        req.method === "GET" && /\/library\/files\/[^/]+$/.test(req.path)
+          ? libraryApi(req)
+          : apiError(503, "INTERNAL", "Storage unavailable.", { code: "LIBRARY_STORAGE_UNAVAILABLE" }),
+      );
+      expect(out.isError, name).toBe(true);
+      expect(out.data.code).toBe("LIBRARY_STORAGE_UNAVAILABLE");
+      expect(out.data.message).toBe("The Library storage is temporarily unavailable.");
+      expect(out.data.remediation).toContain("Try again later");
+    }
   });
 
   it("credential failures keep the shared vocabulary", async () => {

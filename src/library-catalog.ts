@@ -92,10 +92,17 @@ export const LIBRARY_INPUT_SCHEMAS: Record<LibraryToolName, () => z.ZodRawShape>
   read_library_file_content: () => ({ fileId: id("Library file id, from list_library.") }),
   request_library_file_access: () => ({
     fileId: id("Secret Library file id, from list_library."),
+    // The API counts Unicode code points (runes) of the trimmed text, so
+    // the check does too; the advertised JSON Schema stays 1–500.
     purpose: z
       .string()
-      .min(1)
-      .max(LIBRARY_PURPOSE_MAX_LENGTH)
+      .refine((value) => value.trim().length > 0, {
+        message: "purpose must not be empty or only whitespace.",
+      })
+      .refine((value) => Array.from(value).length <= LIBRARY_PURPOSE_MAX_LENGTH, {
+        message: `purpose must be at most ${LIBRARY_PURPOSE_MAX_LENGTH} characters.`,
+      })
+      .meta({ minLength: 1, maxLength: LIBRARY_PURPOSE_MAX_LENGTH })
       .describe(
         "Why you need the file (up to 500 characters). It is shown to the person who approves or rejects the request.",
       ),
@@ -161,13 +168,15 @@ export type LibraryErrorCode =
   | "LIBRARY_APPROVAL_REQUIRED"
   | "LIBRARY_CONTENT_TOO_LARGE"
   | "LIBRARY_NOT_SECRET"
-  | "LIBRARY_TOO_MANY_PENDING";
+  | "LIBRARY_TOO_MANY_PENDING"
+  | "LIBRARY_STORAGE_UNAVAILABLE";
 
 export const LIBRARY_ERROR_CODES: readonly LibraryErrorCode[] = [
   "LIBRARY_APPROVAL_REQUIRED",
   "LIBRARY_CONTENT_TOO_LARGE",
   "LIBRARY_NOT_SECRET",
   "LIBRARY_TOO_MANY_PENDING",
+  "LIBRARY_STORAGE_UNAVAILABLE",
 ];
 
 export const LIBRARY_ERROR_TEXT: Readonly<
@@ -195,6 +204,11 @@ export const LIBRARY_ERROR_TEXT: Readonly<
       "Too many access requests are waiting for a decision. Wait for the user to approve or reject them in Kstonebase before requesting again.",
     remediation:
       "Call read_library_file_access for your pending requests; a request expires 10 minutes after it was made.",
+  },
+  LIBRARY_STORAGE_UNAVAILABLE: {
+    message: "The Library storage is temporarily unavailable.",
+    remediation:
+      "Nothing was returned or changed. Try again later; if it keeps failing, tell the user that the Kstonebase Library storage is unavailable.",
   },
   NOT_FOUND: {
     message: "Not found or outside this credential's scope.",

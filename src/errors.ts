@@ -147,7 +147,10 @@ export type McpStructuredCode =
   | "AUTHORING_UNSUPPORTED"
   // Workspace Library (MCP › features/mcp-library-tools.md §3, PBI 352; API ›
   // features/workspace-library.md §9). The API sends them in `details.code`.
-  | LibraryErrorCode;
+  | LibraryErrorCode
+  // A Library refusal without a known code (for example
+  // LIBRARY_WORKSPACE_ARCHIVED): nothing changed, and retrying won't help.
+  | "CONFLICT";
 
 export interface ApiErrorBody {
   error?: {
@@ -488,6 +491,9 @@ const REMEDIATIONS: Record<McpStructuredCode, string> = {
   LIBRARY_CONTENT_TOO_LARGE: LIBRARY_ERROR_TEXT.LIBRARY_CONTENT_TOO_LARGE.remediation,
   LIBRARY_NOT_SECRET: LIBRARY_ERROR_TEXT.LIBRARY_NOT_SECRET.remediation,
   LIBRARY_TOO_MANY_PENDING: LIBRARY_ERROR_TEXT.LIBRARY_TOO_MANY_PENDING.remediation,
+  LIBRARY_STORAGE_UNAVAILABLE: LIBRARY_ERROR_TEXT.LIBRARY_STORAGE_UNAVAILABLE.remediation,
+  CONFLICT:
+    "Kstonebase refused this in the current state of the Library, and nothing was changed. Tell the user what the message says; do not retry it unchanged.",
 };
 
 // Board-specific wording for shared codes (MCP › mcp-board-tools.md §2.1,
@@ -889,6 +895,18 @@ function mapLibraryError(
       apiMessage,
       REMEDIATIONS.VALIDATION_ERROR,
       pickDetails(rawDetails, LIBRARY_DETAIL_KEYS),
+    );
+  }
+  // A 409 without a recognized code is a state refusal (for example an
+  // archived Workspace), never a stale version to re-read and retry.
+  if (status === 409 && lookupCode(DETAIL_FIRST_CODES, detailCode ?? apiCode) === undefined) {
+    const details: McpFailureDetails = { ...pickDetails(rawDetails, ["hint"]) };
+    if (detailCode !== undefined) details.reason = detailCode;
+    return new McpToolError(
+      "CONFLICT",
+      apiMessage,
+      REMEDIATIONS.CONFLICT,
+      Object.keys(details).length > 0 ? details : undefined,
     );
   }
   const { code, source } = pickStructuredCode(status, apiCode, detailCode);
