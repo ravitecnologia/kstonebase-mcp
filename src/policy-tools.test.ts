@@ -385,8 +385,9 @@ describe("get_effective_instructions — discovery", () => {
     const { tools } = await mcp.listTools();
     // 41 tools, plus the 20 engineering reads of PBI 230, the 7
     // engineering tools of PBI 239 (5 writes, 2 reads) and the 4
-    // specification authoring tools of PBI 276 (1 write, 3 reads).
-    expect(tools).toHaveLength(72);
+    // specification authoring tools of PBI 276 (1 write, 3 reads), and the 6
+    // Library tools of PBI 352 (no policy precondition: frozen contract §5).
+    expect(tools).toHaveLength(78);
     for (const tool of tools) {
       const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
       if (WRITE_TOOLS.includes(tool.name)) {

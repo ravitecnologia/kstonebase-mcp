@@ -535,10 +535,11 @@ describe("engineering tools — catalog", () => {
     const { fetcher } = recorder(replyFor);
     const { mcp, close } = await connect(fetcher);
     const { tools } = await mcp.listTools();
-    // 41 tools, plus the 4 specification authoring tools of PBI 276.
-    expect(tools).toHaveLength(72);
-    expect(tools.slice(45).map((t) => t.name)).toEqual(ENGINEERING);
-    for (const tool of tools.slice(45)) {
+    // 41 tools, plus the 4 specification authoring tools of PBI 276; the 6
+    // Library tools of PBI 352 come after the engineering tools.
+    expect(tools).toHaveLength(78);
+    expect(tools.slice(45, 72).map((t) => t.name)).toEqual(ENGINEERING);
+    for (const tool of tools.slice(45, 72)) {
       expect(tool.annotations, tool.name).toEqual(CONTRACT_ANNOTATIONS[tool.name]);
       expect(tool.description?.endsWith(SENTENCE), tool.name).toBe(true);
       const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };

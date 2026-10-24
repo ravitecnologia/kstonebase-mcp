@@ -802,6 +802,13 @@ describe("open-question tools — discovery", () => {
         "validate_authoring_plan",
         // Engineering discovery, read and assessment tools (PBI 230).
         ...ENGINEERING_TOOL_NAMES,
+        // Workspace Library tools (PBI 352).
+        "list_library",
+        "read_library_file",
+        "get_library_file_link",
+        "read_library_file_content",
+        "request_library_file_access",
+        "read_library_file_access",
       ].sort(),
     );
     await close();

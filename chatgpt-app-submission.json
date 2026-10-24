@@ -876,6 +876,81 @@
         "open_world_justification": "Only ends a private Kstonebase proposal; it never calls GitHub, Azure DevOps or any other provider.",
         "destructive_justification": "Ends a proposal so it can never run, guarded by the action's version; it never stops or undoes a change already sent to a provider."
       }
+    },
+    "list_library": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only lists the folders and media-file metadata of a Workspace Library visible to the current credential; it never returns file contents or links and changes nothing.",
+        "open_world_justification": "Only reads private Kstonebase Library metadata and does not contact or publish to any external service.",
+        "destructive_justification": "Does not upload, rename, move, delete or change the exposure of any file or folder."
+      }
+    },
+    "read_library_file": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only returns one Library file's metadata (name, type, size, exposure, folder, uploader, dates); it never returns contents or links and changes nothing.",
+        "open_world_justification": "Only reads private Kstonebase Library metadata and does not contact or publish to any external service.",
+        "destructive_justification": "Does not upload, rename, move, delete or change the exposure of any file."
+      }
+    },
+    "get_library_file_link": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only issues a temporary read link to a common Library file; it changes no file, folder or setting. Secret files are refused.",
+        "open_world_justification": "The temporary link lets the file be read from Kstonebase storage by whichever tool the user hands it to, for example another MCP server's URL import.",
+        "destructive_justification": "Does not upload, rename, move, delete or change the exposure of any file; the link expires within 15 minutes."
+      }
+    },
+    "read_library_file_content": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only returns a common image or audio file of up to 10 MB as content; it changes nothing. Secret files and videos are never returned.",
+        "open_world_justification": "The file's content is returned to the AI client the user is working with.",
+        "destructive_justification": "Does not upload, rename, move, delete or change the exposure of any file."
+      }
+    },
+    "request_library_file_access": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a pending access request for a secret Library file, shown to the Workspace people who can approve it.",
+        "open_world_justification": "Only records the request inside Kstonebase; nothing is shared until a person approves it with their password.",
+        "destructive_justification": "Only adds a request that expires after 10 minutes; it does not change, approve or delete any file, and grants no access by itself."
+      }
+    },
+    "read_library_file_access": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads the status of the caller's own access request and, once a person approved it, its one-time link; it changes nothing.",
+        "open_world_justification": "Only reads private Kstonebase request data; the package never fetches the one-time link itself.",
+        "destructive_justification": "Does not approve, reject, cancel or delete any request or file."
+      }
     }
   },
   "test_cases": [

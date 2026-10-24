@@ -337,6 +337,7 @@ All tools take ids as strings. Bound Workspace/Product ids are inferred from `.k
 | `list_board_item_notes`       | Older delivery notes and evidence of a work item, newest first. Cursor-paginated.                                                                                                      |
 | `list_board_imports`          | Azure DevOps import previews and runs of the Workspace Board, newest first, with status and counts (Workspace Owner only). Cursor-paginated. See [Imported cards and import reports](#imported-cards-and-import-reports). |
 | `read_board_import`           | One import preview or run: source scope, mappings, warnings, omissions and a page of items with their `plan`, `outcome` and native card. Filters: `plan`, `outcome`. Cursor-paginated (Workspace Owner only). |
+| `list_library`, `read_library_file`, `get_library_file_link`, `read_library_file_content`, `read_library_file_access` | The Workspace Library: folders and media files, file metadata, temporary links and content of common files, and the status of your access requests for secret files. See [Workspace Library](#workspace-library). |
 
 ### Write tools
 
@@ -361,8 +362,9 @@ All tools take ids as strings. Bound Workspace/Product ids are inferred from `.k
 | `append_board_item_note`       | Append delivery notes or validation evidence without changing the item's version. Needs an `idempotencyKey`.                                                                                             |
 | `archive_board_item`           | Archive a work item (Workspace Owner only). Items with active children cannot be archived.                                                                                                               |
 | `restore_board_item`           | Restore an archived work item (Workspace Owner only). Its parent must be active.                                                                                                                         |
+| `request_library_file_access`  | Ask a person to approve access to a secret Library file, with a `purpose` shown to them; then read the decision with `read_library_file_access`. See [Workspace Library](#workspace-library).            |
 
-Every write tool above also accepts an optional `expectedPolicyRevision` (the `policyRevision` from the latest Workspace instructions notice); see [Workspace instructions](#workspace-instructions).
+Every write tool above except `request_library_file_access` also accepts an optional `expectedPolicyRevision` (the `policyRevision` from the latest Workspace instructions notice); see [Workspace instructions](#workspace-instructions).
 
 > **Note** — the agent never calls "mark reviewed". Approval stays a human action in the Kstonebase UI. The MCP can only nudge a draft to `Needs Review`.
 
@@ -460,6 +462,39 @@ The write tools (annotated as Kstonebase writes: `readOnlyHint: false`, `openWor
 Other failures: `REPOSITORY_NOT_CONFIGURED`, `DELIVERY_NOT_CONFIGURED`, `NOT_ALLOWED_BY_POLICY`, `REPOSITORY_ACCESS_DENIED`, `PROVIDER_PERMISSION_INSUFFICIENT`, `REPOSITORY_CHANGED`, `REVISION_NOT_FOUND`, `PATH_NOT_FOUND`, `PULL_REQUEST_NOT_FOUND`, `CI_RUN_NOT_FOUND`, `ENVIRONMENT_NOT_FOUND`, `STAGE_NOT_FOUND`, `PRODUCT_NOT_FOUND`, `RATE_LIMITED` and `VALIDATION_ERROR`; for the writes also `STALE_VERSION`, `IDEMPOTENCY_KEY_REUSED`, `LINK_LIMIT_REACHED`, `LINK_NOT_FOUND`, `ARTIFACT_NOT_FOUND`, `DEPLOYMENT_NOT_FOUND`, `ASSESSMENT_NOT_FOUND`, `ITEM_ARCHIVED`, `COMPLETION_NOT_ELIGIBLE`, `ACTION_CONFLICT`, `ACTION_STATE_CONFLICT`, `ACTION_ACTOR_REQUIRED`, `ACTION_NOT_FOUND`, `ACTION_STALE`, `ACTION_EXPIRED`, `HUMAN_CONFIRMATION_REQUIRED`, `PULL_REQUEST_EXISTS`, `PULL_REQUEST_NOT_OPEN`, `PULL_REQUEST_DRAFT`, `PULL_REQUEST_NOT_MERGEABLE`, `INVALID_REFERENCE` and the policy codes. Each comes with a remediation and the allowlisted `details` (`field`, `problem`, `currentVersion`, `retryAfter`, `operation`, `provider`, `remediation`, `feature`, `changed`, `hint`, `limit`, `actionId`, `state`, `itemId`, `number`, `verdict`).
 
 > **Backend prerequisite** — these tools need a Kstonebase deployment whose API serves the engineering routes and whose Website proxies them under `/api/mcp/…` (the write tools also need the Website's proxies of the link, assessment-save and action routes, and `board.complete` an API with guarded completion). Against an older deployment (a 404, 405 or 501 without a Kstonebase error code) they answer `ENGINEERING_UNSUPPORTED` (nothing was verified or changed); a feature the operator turned off answers `ENGINEERING_UNAVAILABLE`. Every other tool keeps working.
+
+### Workspace Library
+
+Every Workspace has a **Library** of media files (images, videos and audio) that people upload in Kstonebase. Each file is **Common** or **Secret**. These tools let an agent use Library files, including handing a file to another MCP server in the same session. There are no upload, rename, move, delete, exposure or approve tools: those stay human actions in Kstonebase.
+
+| Tool | Annotations | Purpose |
+| ---- | ----------- | ------- |
+| `list_library` | read-only, idempotent | Folders and files of one Library folder (the root when `folderId` is omitted): `id`, `name`, `kind`, `contentType`, `size`, `exposure`, `folderPath`, dates, plus `total` and `nextCursor`. `workspaceId` defaults to the bound Workspace; `limit` ≤ 100. |
+| `read_library_file` | read-only, idempotent | One file's metadata, with the uploader's display name. Never contents or links. |
+| `get_library_file_link` | read-only, open-world | A temporary HTTPS link (at most 15 minutes) to a **common** file. A secret file answers `LIBRARY_APPROVAL_REQUIRED`. |
+| `read_library_file_content` | read-only, open-world | A **common** image or audio file of up to 10 MB as MCP `image` / `audio` content. Videos and larger files answer `LIBRARY_CONTENT_TOO_LARGE` (use the link); secret files `LIBRARY_APPROVAL_REQUIRED`. |
+| `request_library_file_access` | write (not destructive, not idempotent) | Ask a person to approve access to a **secret** file, with a `purpose` (1–500 characters) shown to them. Returns `{ requestId, status: "pending", expiresAt, approvalUrl }`; the request expires after 10 minutes. A common file answers `LIBRARY_NOT_SECRET`. |
+| `read_library_file_access` | read-only | Status of your own request: `pending`, `approved`, `rejected`, `expired` or `redeemed`. Once approved it returns a **one-time link** that works once and expires 5 minutes after approval. |
+
+- **Workspace scope** — the Library needs a credential that covers the whole Workspace (a Workspace or all-Workspaces token, or a session). A Product-only token or a Product-only binding sees no Library: every Library tool answers `NOT_FOUND` *"Not found or outside this credential's scope."* (with a Product-only binding, `list_library` answers it without calling the API). Results of `list_library`, `read_library_file` and `read_library_file_content` carry the Workspace instructions notice of the file's Workspace.
+- **Links are temporary** — pass a link immediately to the tool that needs the file (for example another MCP server's import-from-URL tool) and never store it in specifications, notes or memory. This package never fetches a link it returns: not a temporary link, not a one-time `/library/redeem/` link and not an approval page, and it never logs them.
+- **Secret files need a person** — annotations are hints, not authorization. A client configured to allow every action still cannot obtain a secret file: the Kstonebase API enforces the approval, and only a signed-in person confirming with their password can grant it. The package never requests the bytes of a secret file (`read_library_file_content` checks the file's metadata first).
+- **Errors** — `LIBRARY_APPROVAL_REQUIRED`, `LIBRARY_CONTENT_TOO_LARGE`, `LIBRARY_NOT_SECRET`, `LIBRARY_TOO_MANY_PENDING` (at most 5 pending requests per credential and Workspace; wait for decisions), `LIBRARY_STORAGE_UNAVAILABLE` (try again later), `CONFLICT` (any other refusal in the Library's current state, such as an archived Workspace; `details.reason` names it), `NOT_FOUND`, `VALIDATION_ERROR` and the credential codes, each with a remediation. `purpose` counts Unicode characters and must not be blank.
+
+**Example — a common Library image passed to another MCP server:**
+
+1. `list_library {}` → finds `profile.jpg` (`exposure: "common"`, id `f_123`).
+2. `get_library_file_link { "fileId": "f_123" }` → `{ "url": "https://…", "expiresAt": "…" }`.
+3. Call the other server's URL-import tool (for example a media "import from URL" tool) with that `url`, right away.
+
+**For a secret file:**
+
+1. `request_library_file_access { "fileId": "f_456", "purpose": "Use as a reference image in a generation" }` → `{ "requestId": "ar_1", "status": "pending", "approvalUrl": "…" }`.
+2. Ask the user to approve it in Kstonebase (the `approvalUrl`), where they confirm with their password.
+3. `read_library_file_access { "requestId": "ar_1" }` → `{ "status": "approved", "url": "…/library/redeem/…" }`.
+4. Hand `url` directly to the other server. Never open it yourself: it works once.
+
+> **Backend prerequisite** — these tools need a Kstonebase deployment whose API serves the Library MCP routes (`LIBRARY_ENABLED`) and whose Website proxies them under `/api/mcp/workspaces/:workspaceId/library` and `/api/mcp/library/…`. Against an older deployment every Library tool answers `NOT_FOUND`; every other tool keeps working.
 
 ### Workspace instructions
 
