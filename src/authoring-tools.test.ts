@@ -72,7 +72,7 @@ const APPENDED: Record<string, [string, string]> = {
     "Governed Drafts are checked on the resulting document: a dated change log is refused with BODY_HISTORY_VIOLATION and nothing is written; keep the body as consolidated current state and put rationale in changeNote or append_context. Warnings return as authoringFindings.",
   ],
   request_review: [
-    "Move a Draft specification to Needs Review so a human can mark it Reviewed in Kstonebase. When the Product Owner turned on Auto-approve agent changes and you act with the Owner's credential, Kstonebase approves it in the same request; autoApproval in the result says whether it did. Open questions do not block it: they stay open for the reviewer. An older Kstonebase server may still refuse with OPEN_QUESTIONS_PRESENT; then surface the open questions to the user.",
+    "Move a Draft specification to Needs Review so a human can mark it Reviewed in Kstonebase. When the Product Owner turned on Auto-approve agent changes and you act with the Owner's credential, Kstonebase approves it in the same request — a Draft or a specification already in Needs Review; autoApproval in the result says whether it did. Open questions do not block it: they stay open for the reviewer. An older Kstonebase server may still refuse with OPEN_QUESTIONS_PRESENT; then surface the open questions to the user.",
     'On governed content every rubric dimension of the effective detail level must have substantive text, an explicit "Not applicable: <reason>" or a native open question or assumption; otherwise REVIEW_COVERAGE_INCOMPLETE lists the findings and the status does not change.',
   ],
   append_context: [

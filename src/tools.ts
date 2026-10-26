@@ -1409,7 +1409,7 @@ export function registerWriteTools(
     {
       title: "Request review on a draft",
       description:
-        `Move a Draft specification to Needs Review so a human can mark it Reviewed in Kstonebase. When the Product Owner turned on Auto-approve agent changes and you act with the Owner's credential, Kstonebase approves it in the same request; autoApproval in the result says whether it did. Open questions do not block it: they stay open for the reviewer. An older Kstonebase server may still refuse with OPEN_QUESTIONS_PRESENT; then surface the open questions to the user. ${REQUEST_REVIEW_AUTHORING}`,
+        `Move a Draft specification to Needs Review so a human can mark it Reviewed in Kstonebase. When the Product Owner turned on Auto-approve agent changes and you act with the Owner's credential, Kstonebase approves it in the same request — a Draft or a specification already in Needs Review; autoApproval in the result says whether it did. Open questions do not block it: they stay open for the reviewer. An older Kstonebase server may still refuse with OPEN_QUESTIONS_PRESENT; then surface the open questions to the user. ${REQUEST_REVIEW_AUTHORING}`,
       annotations: ADDITIVE_WRITE_TOOL,
       inputSchema: {
         specId: z.string().min(1),
