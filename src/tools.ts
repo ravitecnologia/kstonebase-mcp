@@ -35,6 +35,7 @@ import {
   resolveAuthoringTarget,
   validateAuthoringPlanInput,
 } from "./authoring.js";
+import { autoApprovePlan, withAutoApproval } from "./auto-approval.js";
 import type { KstonebaseClient, WriteOptions } from "./client.js";
 import type { ResolvedConfig } from "./config.js";
 import {
@@ -1348,16 +1349,18 @@ export function registerWriteTools(
         { specId: args.specId },
         async (call) => {
           call.addresses({ type: "specification", id: args.specId });
-          const res = await client.updateSpecificationContent(
-            args.specId,
-            {
-              content: args.content,
-              version: args.version,
-              changeNote: args.changeNote,
-            },
-            writeOptions(args),
+          const body = await withAutoApproval(client, args.specId, writeOptions(args), () =>
+            client.updateSpecificationContent(
+              args.specId,
+              {
+                content: args.content,
+                version: args.version,
+                changeNote: args.changeNote,
+              },
+              writeOptions(args),
+            ),
           );
-          return ok(res.body);
+          return ok(body);
         },
       ),
   );
@@ -1384,17 +1387,19 @@ export function registerWriteTools(
         { specId: args.specId },
         async (call) => {
           call.addresses({ type: "specification", id: args.specId });
-          const res = await client.updateSpecificationSection(
-            args.specId,
-            {
-              sectionPath: args.sectionPath,
-              newSection: args.newSection,
-              version: args.version,
-              changeNote: args.changeNote,
-            },
-            writeOptions(args),
+          const body = await withAutoApproval(client, args.specId, writeOptions(args), () =>
+            client.updateSpecificationSection(
+              args.specId,
+              {
+                sectionPath: args.sectionPath,
+                newSection: args.newSection,
+                version: args.version,
+                changeNote: args.changeNote,
+              },
+              writeOptions(args),
+            ),
           );
-          return ok(res.body);
+          return ok(body);
         },
       ),
   );
@@ -1404,7 +1409,7 @@ export function registerWriteTools(
     {
       title: "Request review on a draft",
       description:
-        `Move a Draft specification to Needs Review so a human can mark it Reviewed in Kstonebase. Open questions do not block it: they stay open for the reviewer. An older Kstonebase server may still refuse with OPEN_QUESTIONS_PRESENT; then surface the open questions to the user. ${REQUEST_REVIEW_AUTHORING}`,
+        `Move a Draft specification to Needs Review so a human can mark it Reviewed in Kstonebase. When the Product Owner turned on Auto-approve agent changes and you act with the Owner's credential, Kstonebase approves it in the same request; autoApproval in the result says whether it did. Open questions do not block it: they stay open for the reviewer. An older Kstonebase server may still refuse with OPEN_QUESTIONS_PRESENT; then surface the open questions to the user. ${REQUEST_REVIEW_AUTHORING}`,
       annotations: ADDITIVE_WRITE_TOOL,
       inputSchema: {
         specId: z.string().min(1),
@@ -1729,16 +1734,20 @@ export function registerWriteTools(
         async (call) => {
           const productId = requireProductId(config, args.productId);
           call.addresses({ type: "product", id: productId });
-          const res = await client.createFreeSpecification(
-            productId,
-            {
-              title: args.title,
-              path: args.path,
-              tags: args.tags,
-              content: args.content,
-            },
-            writeOptions(args),
-          );
+          const res = {
+            body: await withAutoApproval(client, undefined, writeOptions(args), () =>
+              client.createFreeSpecification(
+                productId,
+                {
+                  title: args.title,
+                  path: args.path,
+                  tags: args.tags,
+                  content: args.content,
+                },
+                writeOptions(args),
+              ),
+            ),
+          };
           // The created specification's context (its new ancestor indexes
           // included); the Product's when the result carries no id. The API
           // answers {spec: {id, ...}}; a top-level id is accepted too.
@@ -1786,7 +1795,7 @@ export function registerWriteTools(
             },
             writeOptions(args),
           );
-          return ok(res.body);
+          return ok(await autoApprovePlan(client, args.container, res.body, writeOptions(args)));
         },
       ),
   );

@@ -57,7 +57,7 @@ export function renderAgentDocs(binding: AgentDocsBinding): string {
     "3. If the spec is Reviewed, call `start_new_version` first; writes against Reviewed specs fail.",
     "4. Edit with `update_specification_section` (targeted) or `update_specification_content` (full body).",
     "5. Resolve open questions explicitly. Mark assumptions in the document so reviewers can challenge them.",
-    "6. Hand off for review (`request_review`). Do not mark specs Reviewed yourself — approval is a human action in the Kstonebase UI.",
+    "6. Hand off for review (`request_review`). Do not mark specs Reviewed yourself — approval is a human action in the Kstonebase UI. The one exception: when the Product Owner turned on Auto-approve agent changes, the write tools request review for the Owner's own agent and Kstonebase approves it; `autoApproval` in the result says so.",
     "",
     ...SPECIFICATION_AUTHORING_SECTION,
     "",
